@@ -189,6 +189,7 @@ func TestExampleReportsEveryRecordType(t *testing.T) {
 		"JWT_SECRET=0123456789abcdef0123456789abcdef", "DB_DATABASE=" + filepath.Join(work, "example.sqlite"),
 		"MAIL_HOST=127.0.0.1", "MAIL_PORT=" + smtpPort, "MAIL_USERNAME=user", "MAIL_PASSWORD=pass",
 		"OUTGOING_URL=http://127.0.0.1:" + capturePort + "/api/omni/ping",
+		"NIGHTWATCH_IGNORE_PATHS=/build/*,/favicon.ico",
 	}
 	appEnv := append(append([]string{}, env...), "QUEUE_NAME="+queueName)
 	app, appLog, _ := start(t, "example", appEnv, work, filepath.Join(bin, "example"))
@@ -227,6 +228,8 @@ func exercise(t *testing.T, mails *fakeSMTP) {
 		{"GET", "/api/outgoing"},
 		{"POST", "/api/notify"},
 		{"POST", "/api/welcome"},
+		{"GET", "/build/assets/app.js"}, // ignored by NIGHTWATCH_IGNORE_PATHS
+		{"GET", "/favicon.ico?v=1"},     // ignored too, the query string does not matter
 	} {
 		call(t, step.method, step.path, "")
 	}
@@ -263,6 +266,7 @@ func verify(t *testing.T, dir, captureLog, appLog string) {
 
 	checkLinks(t, records)
 	checkValues(t, records)
+	checkIgnoredPaths(t, records)
 }
 
 func tail(text string) string {
@@ -453,5 +457,15 @@ func checkCommandRecords(t *testing.T, records []map[string]any) {
 	}
 	if names["hello"] != 1 || names["schedule:list"] != 1 {
 		t.Errorf("want one record for hello and one for schedule:list, got %v", names)
+	}
+}
+
+// checkIgnoredPaths: requests to NIGHTWATCH_IGNORE_PATHS leave no request record.
+func checkIgnoredPaths(t *testing.T, records []map[string]any) {
+	t.Helper()
+	for _, r := range ofType(records, "request") {
+		if url, _ := r["url"].(string); strings.Contains(url, "/build/") || strings.Contains(url, "/favicon.ico") {
+			t.Errorf("an ignored path was recorded: %v", url)
+		}
 	}
 }

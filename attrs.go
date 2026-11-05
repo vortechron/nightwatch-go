@@ -36,9 +36,12 @@ const (
 	// cache-event, mail, notification).
 	AttrRecord = "nightwatch.record"
 
-	AttrRouteName    = "nightwatch.route.name"
-	AttrRouteAction  = "nightwatch.route.action"
-	AttrHeaders      = "nightwatch.request.headers"
+	AttrRouteName   = "nightwatch.route.name"
+	AttrRouteAction = "nightwatch.route.action"
+	AttrHeaders     = "nightwatch.request.headers"
+	// AttrIgnore on a root span drops the whole execution: no record, no
+	// children, no logs. The Goravel middleware sets it for ignored paths.
+	AttrIgnore       = "nightwatch.ignore"
 	AttrPayload      = "nightwatch.request.payload"
 	AttrPeakMemory   = "nightwatch.peak_memory"
 	AttrStageBefore  = "nightwatch.stage.before_middleware"

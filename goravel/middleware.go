@@ -30,9 +30,48 @@ func WithUserResolver(resolve UserResolver) Option {
 	return func(m *middleware) { m.resolve = resolve }
 }
 
+// WithIgnorePaths adds request path globs that are not recorded, next to the
+// ones in NIGHTWATCH_IGNORE_PATHS. See nightwatch.PathIgnored for the syntax:
+// "/build/*" covers everything under /build/, the query string is ignored.
+func WithIgnorePaths(patterns ...string) Option {
+	return func(m *middleware) { m.ignore = append(m.ignore, patterns...) }
+}
+
 type middleware struct {
 	app     func() contractsfoundation.Application
 	resolve UserResolver
+	ignore  []string
+}
+
+// ignored reports whether the request path is on an ignore list.
+func (m *middleware) ignored(client *nightwatch.Client, path string) bool {
+	patterns := append(append([]string(nil), client.Config().IgnorePaths...), m.ignore...)
+
+	return nightwatch.PathIgnored(patterns, path)
+}
+
+// IgnoreFilter is for Goravel's telemetry middleware:
+//
+//	telemetryhttp.Telemetry(telemetryhttp.WithFilter(nwgoravel.IgnoreFilter(facades.App)))
+//
+// It returns false for ignored paths, so Goravel starts no span at all for
+// them (static assets, favicons). It takes the same options as the middleware
+// and reads NIGHTWATCH_IGNORE_PATHS. A disabled client returns true: telemetry
+// keeps its own behaviour.
+func IgnoreFilter(getApp func() contractsfoundation.Application, options ...Option) func(contractshttp.Context) bool {
+	m := &middleware{app: getApp}
+	for _, option := range options {
+		option(m)
+	}
+
+	return func(ctx contractshttp.Context) bool {
+		client := m.client()
+		if client == nil || !client.Enabled() {
+			return true
+		}
+
+		return !m.ignored(client, ctx.Request().Path())
+	}
 }
 
 // Middleware enriches the span that Goravel's telemetry middleware opened
@@ -69,6 +108,16 @@ func (m *middleware) client() *nightwatch.Client {
 func (m *middleware) Handle(ctx contractshttp.Context) {
 	client := m.client()
 	if client == nil || !client.Enabled() {
+		ctx.Request().Next()
+
+		return
+	}
+
+	// An ignored path is not an execution: no marker, no attributes, nothing
+	// counted. If a span was started anyway (the telemetry middleware has no
+	// IgnoreFilter), tell the translator to drop the whole execution.
+	if m.ignored(client, ctx.Request().Path()) {
+		trace.SpanFromContext(ctx.Context()).SetAttributes(attribute.Bool(nightwatch.AttrIgnore, true))
 		ctx.Request().Next()
 
 		return

@@ -25,7 +25,7 @@ func Boot() contractsfoundation.Application {
 		WithMiddleware(func(m configuration.Middleware) {
 			// Goravel's telemetry middleware opens the request span; the
 			// Nightwatch middleware adds path, headers, sizes and the user.
-			m.Append(telemetryhttp.Telemetry(), nwgoravel.LazyMiddleware(facades.App, nwgoravel.WithUserResolver(resolveUser)))
+			m.Append(telemetryhttp.Telemetry(telemetryhttp.WithFilter(nwgoravel.IgnoreFilter(facades.App))), nwgoravel.LazyMiddleware(facades.App, nwgoravel.WithUserResolver(resolveUser)))
 		}).
 		WithCommands(func() []contractsconsole.Command {
 			return []contractsconsole.Command{&commands.Hello{}}

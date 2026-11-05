@@ -257,7 +257,7 @@ func (t *Translator) finishRoot(traceID trace.TraceID, buf *traceBuf, root sdktr
 	members, logs := t.collect(buf, rootID)
 
 	info := newExecInfo(root, kind, firstUser(members))
-	info.sampled = t.keep(traceID, root, kind, members)
+	info.sampled = !newAttrSet(root.Attributes()).bool(AttrIgnore) && t.keep(traceID, root, kind, members)
 
 	expires := t.now().Add(2*t.cfg.TraceMaxWait + t.cfg.RootGrace)
 	for _, member := range members {
