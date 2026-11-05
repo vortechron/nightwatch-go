@@ -1,8 +1,13 @@
 package nightwatch
 
 import (
+	"fmt"
+	"hash/crc32"
+	"strings"
+
 	"context"
 	"errors"
+	"github.com/google/uuid"
 	"testing"
 	"time"
 
@@ -24,7 +29,7 @@ func TestInstrument_QueueRoundTripKeepsTrace(t *testing.T) {
 	var carrier string
 	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
 		dctx, end := StartJobDispatch(ctx, JobInfo{Name: "jobs.SendEmail", Connection: "redis", Queue: "default"})
-		carrier = EncodeJobEnvelope(dctx, "redis", "default")
+		carrier = EncodeJobEnvelope(dctx, "redis", "default", false)
 		end(nil)
 	})
 
@@ -89,7 +94,10 @@ func TestInstrument_MailNotificationUserAndHandled(t *testing.T) {
 	h := newHarness(t, nil)
 	useHarness(t, h)
 	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
-		SetUser(ctx, User{ID: "7", Name: "Ada", Username: "ada"})
+		ctx = SetUser(ctx, User{ID: "7", Name: "Ada", Username: "ada"})
+		if UserFromContext(ctx) != "7" {
+			t.Error("the user id must be kept in the context")
+		}
 		_, endMail := StartMail(ctx, MailInfo{Mailer: "smtp", Class: "Welcome", Subject: "Hi", To: 1})
 		endMail(nil)
 		_, endN := StartNotification(ctx, NotificationInfo{Channel: "mail", Class: "Alert"})
@@ -133,5 +141,46 @@ func TestExceptionClass(t *testing.T) {
 		if got := exceptionClass(tt.err); got != tt.want {
 			t.Errorf("got %s want %s", got, tt.want)
 		}
+	}
+}
+
+func TestEnvelope_StrictAndCarriesTheUser(t *testing.T) {
+	h := newHarness(t, nil)
+	useHarness(t, h)
+	var carrier string
+	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
+		ctx = SetUser(ctx, User{ID: "u|1", Name: "x"})
+		dctx, end := StartJobDispatch(ctx, JobInfo{Name: "j"})
+		carrier = EncodeJobEnvelope(dctx, "re|dis", "q ueue", true)
+		end(nil)
+	})
+	env, ok := DecodeJobEnvelope(carrier)
+	if !ok || env.User != "u|1" || env.Connection != "re|dis" || env.Queue != "q ueue" || !env.Sync || !IsJobEnvelope(carrier) {
+		t.Fatalf("round trip failed: %+v %q", env, carrier)
+	}
+	if EncodeJobEnvelope(context.Background(), "", "", false) != "" {
+		t.Fatal("no dispatch span, no envelope")
+	}
+
+	tampered := strings.Replace(carrier, "re%7Cdis", "other", 1)
+	for name, bad := range map[string]string{
+		"checksum":   tampered,
+		"truncated":  carrier[:len(carrier)-3],
+		"empty":      "",
+		"plain text": "hello|world",
+		"tag":        strings.Replace(carrier, "nwtp2", "nwtp1", 1),
+	} {
+		if IsJobEnvelope(bad) {
+			t.Errorf("%s must not be accepted", name)
+		}
+	}
+
+	body := "nwtp2|00-" + strings.Repeat("a", 32) + "-" + strings.Repeat("b", 16) + "-01|not-a-uuid|c|q|u|0"
+	if IsJobEnvelope(body + "|" + fmt.Sprintf("%08x", crc32.ChecksumIEEE([]byte(body)))) {
+		t.Fatal("a bad job id must be rejected even with a good checksum")
+	}
+	body = "nwtp2|garbage|" + uuid.NewString() + "|c|q|u|0"
+	if IsJobEnvelope(body + "|" + fmt.Sprintf("%08x", crc32.ChecksumIEEE([]byte(body)))) {
+		t.Fatal("a bad traceparent must be rejected even with a good checksum")
 	}
 }

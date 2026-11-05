@@ -85,19 +85,32 @@ type User struct {
 	Username string
 }
 
-// SetUser stores the signed-in user on the current span. Omni shows the id on
-// every record of the execution, and the name on the user page.
-func SetUser(ctx context.Context, user User) {
-	span := trace.SpanFromContext(ctx)
-	if user.ID == "" || !span.IsRecording() {
-		return
+type userKey struct{}
+
+// UserFromContext returns the user id stored by SetUser, or "".
+func UserFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(userKey{}).(string)
+
+	return id
+}
+
+// SetUser stores the signed-in user on the current span and returns a context
+// that remembers the id, so jobs dispatched from it carry the user. Omni shows
+// the id on every record of the execution, and the name on the user page.
+func SetUser(ctx context.Context, user User) context.Context {
+	if user.ID == "" {
+		return ctx
 	}
 
-	span.SetAttributes(
-		attribute.String(attrEnduserID, user.ID),
-		attribute.String(AttrUserName, user.Name),
-		attribute.String(AttrUserUsername, user.Username),
-	)
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(
+			attribute.String(attrEnduserID, user.ID),
+			attribute.String(AttrUserName, user.Name),
+			attribute.String(AttrUserUsername, user.Username),
+		)
+	}
+
+	return context.WithValue(ctx, userKey{}, user.ID)
 }
 
 // JobInfo describes a queued job.
@@ -106,17 +119,6 @@ type JobInfo struct {
 	Connection string
 	Queue      string
 }
-
-// JobEnvelope is what travels with a queued job so the worker continues the
-// trace of the code that queued it.
-type JobEnvelope struct {
-	TraceParent string
-	JobID       string
-	Connection  string
-	Queue       string
-}
-
-const envelopePrefix = "nwtp1|"
 
 // StartJobDispatch records a queued-job at the moment the job is pushed. Call
 // EncodeJobEnvelope with the returned context and ship the result with the job.
@@ -138,42 +140,6 @@ func StartJobDispatch(ctx context.Context, job JobInfo) (context.Context, EndFun
 
 type jobIDKey struct{}
 
-// EncodeJobEnvelope returns "nwtp1|<traceparent>|<job id>|<connection>|<queue>"
-// for the span in ctx, or "" when there is none.
-func EncodeJobEnvelope(ctx context.Context, connection, queue string) string {
-	span := trace.SpanFromContext(ctx)
-	if !span.SpanContext().IsValid() {
-		return ""
-	}
-
-	carrier := propagation.MapCarrier{}
-	propagation.TraceContext{}.Inject(ctx, carrier)
-
-	jobID, _ := ctx.Value(jobIDKey{}).(string)
-
-	return envelopePrefix + strings.Join([]string{carrier.Get("traceparent"), jobID, connection, queue}, "|")
-}
-
-// DecodeJobEnvelope parses EncodeJobEnvelope output.
-func DecodeJobEnvelope(value string) (JobEnvelope, bool) {
-	rest, found := strings.CutPrefix(value, envelopePrefix)
-	if !found {
-		return JobEnvelope{}, false
-	}
-
-	parts := strings.SplitN(rest, "|", 4)
-	if len(parts) != 4 || parts[0] == "" {
-		return JobEnvelope{}, false
-	}
-
-	return JobEnvelope{TraceParent: parts[0], JobID: parts[1], Connection: parts[2], Queue: parts[3]}, true
-}
-
-// IsJobEnvelope reports whether value looks like an envelope.
-func IsJobEnvelope(value string) bool {
-	return strings.HasPrefix(value, envelopePrefix)
-}
-
 // StartJobAttempt starts the root span of one run of a job. The envelope may
 // be empty (a job queued outside any trace): the attempt then starts its own
 // trace.
@@ -190,6 +156,7 @@ func StartJobAttempt(ctx context.Context, env JobEnvelope, job JobInfo, attempt 
 	ctx, span := tracer().Start(ctx, "queue.process "+job.Name,
 		trace.WithSpanKind(trace.SpanKindConsumer),
 		trace.WithAttributes(
+			attribute.String(attrEnduserID, env.User),
 			attribute.String(AttrRecord, RecordJobAttempt),
 			attribute.String(AttrJobID, jobID),
 			attribute.String(AttrJobName, job.Name),
