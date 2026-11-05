@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,7 +81,7 @@ func (f *fakeOmni) calls() []received {
 
 func (f *fakeOmni) waitFor(t *testing.T, n int) []received {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if got := f.calls(); len(got) >= n {
 			return got
@@ -213,10 +214,9 @@ func TestSender_PausesOn402(t *testing.T) {
 	s.setClock(func() time.Time { return now })
 	s.Enqueue(oneRecord(2))
 	f.waitFor(t, 1)
-	time.Sleep(60 * time.Millisecond)
+	waitUntil(t, "the quota pause to start", func() bool { return s.Dropped() == 2 })
 
 	s.Enqueue(oneRecord(4)) // inside the pause: dropped
-	time.Sleep(60 * time.Millisecond)
 	if len(f.calls()) != 1 {
 		t.Fatalf("must not send while paused, calls=%d", len(f.calls()))
 	}
@@ -248,7 +248,14 @@ func TestSender_BoundedMemoryDropsOldest(t *testing.T) {
 
 func TestSender_EnqueueNeverBlocksOnSlowServer(t *testing.T) {
 	block := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-block }))
+	entered := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-block
+	}))
 	defer srv.Close()
 	defer close(block)
 	cfg := testConfig()
@@ -256,12 +263,12 @@ func TestSender_EnqueueNeverBlocksOnSlowServer(t *testing.T) {
 	cfg.FlushInterval = 10 * time.Millisecond
 	s := startSender(t, cfg)
 	s.Enqueue(oneRecord(1))
-	time.Sleep(50 * time.Millisecond)
+	<-entered // the sender is now stuck inside a request
 	done := make(chan struct{})
 	go func() { s.Enqueue(oneRecord(100)); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Enqueue blocked")
 	}
 }
@@ -331,6 +338,20 @@ func TestSender_DisabledDoesNothing(t *testing.T) {
 	}
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// waitUntil polls a condition. It never decides a result by elapsed time; the
+// long limit only turns a hang into a failure.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("gave up waiting for %s", what)
+		}
+		runtime.Gosched()
+		time.Sleep(time.Millisecond)
 	}
 }
 

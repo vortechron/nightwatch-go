@@ -196,7 +196,8 @@ func TestExampleReportsEveryRecordType(t *testing.T) {
 	waitHTTP(t, "http://127.0.0.1:"+appPort+"/api/tasks/7")
 
 	exercise(t, mails)
-	time.Sleep(4 * time.Second) // let the scheduler tick and the batches go out
+	waitForRecord(t, captureDir, "scheduled-task") // the scheduler ticks every second
+	waitForRecord(t, captureDir, "job-attempt")
 	stop(t, app)
 
 	// A command runs in its own short process and flushes before it exits.
@@ -209,7 +210,7 @@ func TestExampleReportsEveryRecordType(t *testing.T) {
 	}
 	t.Logf("command output: %s", cmdLog.String())
 
-	time.Sleep(500 * time.Millisecond)
+	waitForRecord(t, captureDir, "command")
 	keepCapture(t, captureDir)
 	verify(t, captureDir, captureLog.String(), appLog.String())
 
@@ -356,4 +357,17 @@ func keepCapture(t *testing.T, dir string) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// waitForRecord polls the capture folder until a record of the type arrived.
+func waitForRecord(t *testing.T, dir, kind string) {
+	t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(ofType(loadRecords(t, dir), kind)) > 0 {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("no %q record arrived in 60s", kind)
 }

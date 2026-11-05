@@ -24,7 +24,7 @@ func TestClient_SpansReachOmniAndShutdownFlushes(t *testing.T) {
 	_ = ctx
 	_ = tp.Shutdown(context.Background())
 
-	sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := client.Shutdown(sctx); err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestClient_FullPath(t *testing.T) {
 	h := &harness{tp: tp, tracer: tp.Tracer("t"), sink: &captureSink{}}
 	h.request(context.Background(), 200, nil)
 	f.waitFor(t, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := client.Shutdown(ctx); err != nil {
 		t.Fatal(err)

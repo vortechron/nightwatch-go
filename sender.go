@@ -36,6 +36,9 @@ type Sender struct {
 	client *http.Client
 	log    *slog.Logger
 	sleep  func(ctx context.Context, d time.Duration) error
+	// afterFailedAttempt is a test hook called after each failed attempt of a
+	// batch, before the retry decision. Nil in production.
+	afterFailedAttempt func()
 
 	mu          sync.Mutex
 	ring        ring
@@ -181,7 +184,8 @@ func (s *Sender) Flush(ctx context.Context) {
 // Shutdown stops the goroutine after one last flush. While it runs, a batch
 // that fails gets one more attempt and is then dropped, so a dead server
 // cannot hold the shutdown. When ctx ends first, Shutdown returns the context
-// error and counts every record still waiting as dropped. Records enqueued
+// error (also when it ended just as the sender finished) and counts every record
+// still waiting as dropped. Records enqueued
 // after Shutdown are dropped and counted.
 func (s *Sender) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
@@ -204,7 +208,9 @@ func (s *Sender) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-s.done:
-		return nil
+		// The goroutine can finish at the same moment the context ends, because
+		// it was working under that context. Report the expiry either way.
+		return ctx.Err() //nolint:wrapcheck // plain context error
 	case <-ctx.Done():
 		s.dropPending()
 
@@ -291,13 +297,30 @@ func (s *Sender) deliver(ctx context.Context, batch []Record) {
 	started := s.now()
 
 	for attempt := 0; ; attempt++ {
+		// Whether shutdown had already begun decides if this attempt was
+		// already the final one. It must be read before the POST: Shutdown can
+		// arrive at any moment, including right after a failed attempt.
+		finalAlready := s.isStopping()
+
 		result := s.post(ctx, body, key, len(batch))
 		if s.finished(result, len(batch)) {
 			return
 		}
 
-		if s.isStopping() || attempt >= s.cfg.MaxRetries || s.now().Sub(started) > s.cfg.MaxRetryTime {
+		if s.afterFailedAttempt != nil {
+			s.afterFailedAttempt()
+		}
+
+		if finalAlready || attempt >= s.cfg.MaxRetries || s.now().Sub(started) > s.cfg.MaxRetryTime {
 			s.giveUp(len(batch), "retry limit reached")
+
+			return
+		}
+
+		// Shutdown began during or after the failed attempt: no backoff wait,
+		// exactly one more attempt, then drop.
+		if s.isStopping() {
+			s.finalAttempt(ctx, body, key, len(batch), errStopping)
 
 			return
 		}
