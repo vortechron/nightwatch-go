@@ -17,6 +17,10 @@ import (
 // The mailer name shown in Omni is "smtp", the only transport Goravel's mailer
 // has (its mail config has no mailer name). Pass a name to override it.
 func Mail(ctx context.Context, inner mail.Mail, mailer ...string) mail.Mail {
+	if !nightwatch.Active(ctx) {
+		return inner
+	}
+
 	name := defaultMailer
 	if len(mailer) > 0 && mailer[0] != "" {
 		name = mailer[0]

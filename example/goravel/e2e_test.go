@@ -371,3 +371,61 @@ func waitForRecord(t *testing.T, dir, kind string) {
 	}
 	t.Fatalf("no %q record arrived in 60s", kind)
 }
+
+// With Nightwatch disabled the app must behave exactly as without the library:
+// nothing reaches Omni, and a queued job still gets only its own arguments.
+func TestExampleWorksWithNightwatchDisabled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end to end test")
+	}
+	root, _ := filepath.Abs("../..")
+	bin := t.TempDir()
+	build(t, root, filepath.Join(bin, "omni-capture"), "./cmd/omni-capture")
+	build(t, ".", filepath.Join(bin, "example"), ".")
+
+	mails := startFakeSMTP(t, "127.0.0.1:"+smtpPort, func(total int64) {
+		if total > maxMails {
+			t.Errorf("runaway mail loop: %d connections", total)
+		}
+	})
+	captureDir := t.TempDir()
+	_, captureLog, _ := start(t, "omni-capture", nil, root, filepath.Join(bin, "omni-capture"), "-addr", "127.0.0.1:"+capturePort, "-dir", captureDir)
+	waitHTTP(t, "http://127.0.0.1:"+capturePort+"/api/omni/ping")
+
+	queueName := fmt.Sprintf("nwgo-e2e-off-%d", time.Now().UnixNano())
+	work := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(work, "storage", "logs"), 0o750)
+	t.Cleanup(func() { cleanRedis(queueName) })
+
+	env := []string{
+		"NIGHTWATCH_ENABLED=false", "NIGHTWATCH_TOKEN=e2e", "NIGHTWATCH_BASE_URL=http://127.0.0.1:" + capturePort,
+		"APP_KEY=01234567890123456789012345678901", "APP_ENV=local", "APP_PORT=" + appPort, "QUEUE_NAME=" + queueName,
+		"JWT_SECRET=0123456789abcdef0123456789abcdef", "DB_DATABASE=" + filepath.Join(work, "example.sqlite"),
+		"MAIL_HOST=127.0.0.1", "MAIL_PORT=" + smtpPort, "MAIL_USERNAME=user", "MAIL_PASSWORD=pass",
+		"OUTGOING_URL=http://127.0.0.1:" + capturePort + "/api/omni/ping",
+	}
+	app, _, _ := start(t, "example", env, work, filepath.Join(bin, "example"))
+	waitHTTP(t, "http://127.0.0.1:"+appPort+"/api/tasks/7")
+
+	for _, step := range []struct{ method, path string }{
+		{"GET", "/api/tasks/7"}, {"GET", "/api/boom"}, {"POST", "/api/mail"}, {"GET", "/api/outgoing"}, {"POST", "/api/welcome"},
+	} {
+		call(t, step.method, step.path, "")
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for mails.messages.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+	}
+	if mails.messages.Load() < 2 {
+		t.Fatalf("the queued job did not run: %d mails (it must get only its own arguments)", mails.messages.Load())
+	}
+
+	stop(t, app)
+	if records := loadRecords(t, captureDir); len(records) != 0 {
+		t.Fatalf("a disabled client must send nothing, got %d records", len(records))
+	}
+	if strings.Contains(captureLog.String(), "batch") {
+		t.Fatalf("Omni saw traffic: %s", captureLog.String())
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"net/http"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+	nightwatch "github.com/vortechron/nightwatch-go"
 )
 
 // Transport wraps an HTTP transport so every outgoing request becomes an
@@ -16,5 +18,20 @@ func Transport(base http.RoundTripper) http.RoundTripper {
 		base = http.DefaultTransport
 	}
 
-	return otelhttp.NewTransport(base)
+	return &gatedTransport{base: base, traced: otelhttp.NewTransport(base)}
+}
+
+// gatedTransport traces only requests whose context belongs to a Nightwatch
+// execution. Any other request goes straight to the base transport.
+type gatedTransport struct {
+	base   http.RoundTripper
+	traced http.RoundTripper
+}
+
+func (g *gatedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if nightwatch.Active(req.Context()) {
+		return g.traced.RoundTrip(req) //nolint:wrapcheck // passthrough
+	}
+
+	return g.base.RoundTrip(req) //nolint:wrapcheck // passthrough
 }

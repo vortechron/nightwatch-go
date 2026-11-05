@@ -25,18 +25,27 @@ type ContextJob interface {
 // Goravel's Job(...).Dispatch() carries no context, so it has no request to
 // attach to. Use Queue(ctx, q) where a request is in scope.
 func WrapQueue(inner queue.Queue) queue.Queue {
+	return &queueFacade{Queue: inner, attempts: newAttemptCounter(), tracing: true}
+}
+
+// TolerateEnvelopes is WrapQueue for a disabled client: registered jobs only
+// have the Nightwatch envelope argument removed, nothing is traced. A worker
+// that does not trace must still accept jobs that a tracing dispatcher
+// queued, or their Handle would receive an argument it never expected.
+func TolerateEnvelopes(inner queue.Queue) queue.Queue {
 	return &queueFacade{Queue: inner, attempts: newAttemptCounter()}
 }
 
 type queueFacade struct {
 	queue.Queue
 	attempts *attemptCounter
+	tracing  bool
 }
 
 func (q *queueFacade) Register(jobs []queue.Job) {
 	wrapped := make([]queue.Job, len(jobs))
 	for i, job := range jobs {
-		wrapped[i] = wrapJob(job, q.attempts)
+		wrapped[i] = wrapJob(job, q.attempts, q.tracing)
 	}
 
 	q.Queue.Register(wrapped)
@@ -51,7 +60,15 @@ func (q *queueFacade) Register(jobs []queue.Job) {
 //
 // The worker must run the same provider: it strips the trailing envelope
 // argument. A worker without it would pass that string to Handle.
+//
+// Outside a Nightwatch execution (the client is disabled, or ctx does not come
+// from a request, command, job or scheduled task) it returns inner itself:
+// no envelope argument, no span.
 func Queue(ctx context.Context, inner queue.Queue) queue.Queue {
+	if !nightwatch.Active(ctx) {
+		return inner
+	}
+
 	return &dispatchQueue{Queue: inner, ctx: ctx, syncDrivers: &sync.Map{}}
 }
 
@@ -192,10 +209,15 @@ func (p *pendingJob) realPending(jobs []queue.ChainJob) dispatcher {
 type tracedJob struct {
 	queue.Job
 	attempts *attemptCounter
+	tracing  bool
 }
 
 func (j *tracedJob) Handle(args ...any) (err error) {
 	env, rest := splitEnvelope(args)
+
+	if !j.tracing {
+		return j.Job.Handle(rest...) //nolint:wrapcheck // passthrough of the job error
+	}
 
 	if env.Sync {
 		return j.runInline(env, rest)
@@ -226,7 +248,7 @@ func (j *tracedJob) Handle(args ...any) (err error) {
 // attempt (Nightwatch records none for the sync connection); its work joins
 // the trace of the dispatching code.
 func (j *tracedJob) runInline(env nightwatch.JobEnvelope, args []any) error {
-	ctx := propagation.TraceContext{}.Extract(context.Background(), propagation.MapCarrier{"traceparent": env.TraceParent})
+	ctx := propagation.TraceContext{}.Extract(nightwatch.MarkActive(context.Background()), propagation.MapCarrier{"traceparent": env.TraceParent})
 
 	return j.call(ctx, args)
 }
@@ -242,8 +264,8 @@ func (j *tracedJob) call(ctx context.Context, args []any) error {
 // wrapJob traces a job. A job with its own retry rule keeps it. A job without
 // one must not gain one: Goravel treats "has ShouldRetry" as "retry as often
 // as it says", so the wrapper only offers ShouldRetry when the job has it.
-func wrapJob(job queue.Job, attempts *attemptCounter) queue.Job {
-	traced := &tracedJob{Job: job, attempts: attempts}
+func wrapJob(job queue.Job, attempts *attemptCounter, tracing bool) queue.Job {
+	traced := &tracedJob{Job: job, attempts: attempts, tracing: tracing}
 	if retry, ok := job.(queue.JobWithShouldRetry); ok {
 		return &tracedRetryJob{tracedJob: traced, retry: retry}
 	}

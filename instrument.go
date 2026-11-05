@@ -21,6 +21,24 @@ func tracer() trace.Tracer {
 	return otel.GetTracerProvider().Tracer(instrumentationScope)
 }
 
+type activeKey struct{}
+
+// MarkActive returns a context that says "this runs inside a Nightwatch
+// execution" (a request, command, job attempt or scheduled task). Wrappers of
+// context-less APIs (queue dispatch, mail, cache, HTTP client) only trace when
+// the context is active; otherwise they are pure pass-through. That is how a
+// disabled client costs nothing: nothing ever marks a context.
+func MarkActive(ctx context.Context) context.Context {
+	return context.WithValue(ctx, activeKey{}, true)
+}
+
+// Active reports whether ctx belongs to a Nightwatch execution.
+func Active(ctx context.Context) bool {
+	active, _ := ctx.Value(activeKey{}).(bool)
+
+	return active
+}
+
 // EndFunc ends a span. A non-nil error marks the span failed and records it
 // as an exception.
 type EndFunc func(err error)
@@ -165,7 +183,7 @@ func StartJobAttempt(ctx context.Context, env JobEnvelope, job JobInfo, attempt 
 			attribute.Int(AttrJobAttempt, attempt),
 		))
 
-	return ctx, func(err error) { finish(span, err) }
+	return MarkActive(ctx), func(err error) { finish(span, err) }
 }
 
 // CommandInfo describes a console command run.
@@ -187,7 +205,7 @@ func StartCommand(ctx context.Context, info CommandInfo) (context.Context, Comma
 		attribute.String(AttrCommandLine, info.Line),
 	))
 
-	return ctx, func(exitCode int, err error) {
+	return MarkActive(ctx), func(exitCode int, err error) {
 		span.SetAttributes(attribute.Int(AttrCommandExitCode, exitCode))
 		finish(span, err)
 	}
@@ -229,7 +247,7 @@ func StartScheduledTask(ctx context.Context, info TaskInfo) (context.Context, Ta
 		attribute.Bool(AttrTaskMaintenance, info.EvenInMaintenanceMode),
 	))
 
-	return ctx, func(status string, err error) {
+	return MarkActive(ctx), func(status string, err error) {
 		span.SetAttributes(attribute.String(AttrTaskStatus, status))
 		finish(span, err)
 	}

@@ -75,6 +75,8 @@ func (m *middleware) Handle(ctx contractshttp.Context) {
 		return
 	}
 
+	ctx.WithContext(nightwatch.MarkActive(ctx.Context()))
+
 	cfg := client.Config()
 	span := trace.SpanFromContext(ctx.Context())
 	req := ctx.Request()

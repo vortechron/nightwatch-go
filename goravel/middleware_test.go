@@ -399,6 +399,7 @@ func TestProvider_DisabledDoesNothing(t *testing.T) {
 	app := mocksfoundation.NewApplication(t)
 	app.EXPECT().Singleton(BindingClient, mock.Anything)
 	app.EXPECT().Make(BindingClient).Return(nightwatch.New(nightwatch.Config{}), nil)
+	app.EXPECT().MakeQueue().Return(nil) // only the job registry is looked at
 
 	var p NightwatchServiceProvider
 	p.Register(app)
@@ -411,6 +412,7 @@ func TestProvider_DisabledDoesNothing(t *testing.T) {
 
 	missing := mocksfoundation.NewApplication(t)
 	missing.EXPECT().Make(BindingClient).Return(nil, errors.New("none"))
+	missing.EXPECT().MakeQueue().Return(nil)
 	p.Boot(missing)
 	if p.Runners(missing)[0].ShouldRun() {
 		t.Fatal("no client")

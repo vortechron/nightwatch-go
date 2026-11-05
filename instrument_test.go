@@ -184,3 +184,18 @@ func TestEnvelope_StrictAndCarriesTheUser(t *testing.T) {
 		t.Fatal("a bad traceparent must be rejected even with a good checksum")
 	}
 }
+
+func TestActive_RootsMarkTheirContext(t *testing.T) {
+	h := newHarness(t, nil)
+	useHarness(t, h)
+	if Active(context.Background()) {
+		t.Fatal("a plain context is not active")
+	}
+	taskCtx, endTask := StartScheduledTask(context.Background(), TaskInfo{Name: "t"})
+	attemptCtx, endAttempt := StartJobAttempt(context.Background(), JobEnvelope{}, JobInfo{Name: "j"}, 1)
+	defer endTask(TaskProcessed, nil)
+	defer endAttempt(nil)
+	if !Active(taskCtx) || !Active(attemptCtx) || !Active(MarkActive(context.Background())) {
+		t.Fatal("task, attempt and marked contexts are active")
+	}
+}

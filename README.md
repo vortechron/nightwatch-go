@@ -58,6 +58,15 @@ nwgoravel.Mail(ctx, facades.Mail()).To(addrs).Send(m)                           
 facades.Cache().WithContext(ctx).Get("k")                                                 // cache-event (global wrap)
 ```
 
+These wrappers (`Queue`, `Mail`, `Cache`, `Transport`) trace only when `ctx` belongs to a Nightwatch execution: a
+request that went through the middleware, a command, a job attempt or a scheduled task (`nightwatch.Active(ctx)`).
+With a disabled client nothing is ever marked, so they are pure pass-through: `Queue` and `Mail` return the very same
+object, no envelope argument is added and no span is made. The same holds for code that runs outside any execution
+(a bare goroutine with `context.Background()`), which has no execution to attach to anyway. When the client is
+disabled the provider also leaves the cache, schedule and artisan alone, and only installs `TolerateEnvelopes` on the
+job registry: a worker that does not trace still removes the envelope that a tracing dispatcher added, so a job
+handles the same arguments with and without it.
+
 Every worker that runs these jobs must run the provider too: the trace travels as a trailing job argument that the
 wrapped job removes before your `Handle` runs. The argument is a string `nwtp2|<traceparent>|<job id>|<connection>|<queue>|<user>|<sync>|<crc32>`;
 only a last argument that passes the strict check (tag, W3C traceparent, UUID, checksum) is removed. Evidence for

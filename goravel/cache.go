@@ -40,7 +40,13 @@ func (s *storeFacade) WithContext(ctx context.Context) cache.Driver {
 
 // Cache wraps a cache driver so its calls become cache-event records of the
 // execution in ctx. store is the label shown in Omni. Lock is not recorded.
+//
+// Outside a Nightwatch execution it returns inner itself.
 func Cache(ctx context.Context, inner cache.Driver, store string) cache.Driver {
+	if !nightwatch.Active(ctx) {
+		return inner
+	}
+
 	if store == "" {
 		store = "default"
 	}

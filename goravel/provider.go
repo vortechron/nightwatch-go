@@ -53,6 +53,14 @@ func (p NightwatchServiceProvider) Register(app foundation.Application) {
 func (NightwatchServiceProvider) Boot(app foundation.Application) {
 	client := ClientFrom(app)
 	if client == nil || !client.Enabled() {
+		// Disabled: nothing is traced and the cache, schedule and artisan are
+		// left alone. Only the job registry still removes the envelope that a
+		// tracing dispatcher may have added, so a job never sees it.
+		if queue := app.MakeQueue(); queue != nil {
+			app.Instance(binding.Queue, TolerateEnvelopes(queue))
+			app.Fresh(binding.Queue)
+		}
+
 		return
 	}
 

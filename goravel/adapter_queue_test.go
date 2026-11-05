@@ -235,7 +235,7 @@ type retryJob struct{ fakeJob }
 func (retryJob) ShouldRetry(error, int) (bool, time.Duration) { return false, time.Second }
 
 func TestWrapJob_KeepsOwnRetryRule(t *testing.T) {
-	wrapped := wrapJob(&retryJob{}, newAttemptCounter())
+	wrapped := wrapJob(&retryJob{}, newAttemptCounter(), true)
 	retry, ok := wrapped.(queue.JobWithShouldRetry)
 	if !ok {
 		t.Fatal("must offer ShouldRetry")
