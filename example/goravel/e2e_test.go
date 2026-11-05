@@ -200,17 +200,15 @@ func TestExampleReportsEveryRecordType(t *testing.T) {
 	waitForRecord(t, captureDir, "job-attempt")
 	stop(t, app)
 
-	// A command runs in its own short process and flushes before it exits.
+	// Each artisan command runs in its own short process and must flush before
+	// it exits. hello is registered by the app; schedule:list is a built-in the
+	// framework registered before Nightwatch started.
 	cmdBin := filepath.Join(bin, "example")
-	_, cmdLog, cmdDone := start(t, "command", env, work, cmdBin, "artisan", "hello")
-	select {
-	case <-cmdDone:
-	case <-time.After(30 * time.Second):
-		t.Error("command did not finish")
-	}
-	t.Logf("command output: %s", cmdLog.String())
+	runArtisan(t, env, work, cmdBin, "hello")
+	runArtisan(t, env, work, cmdBin, "schedule:list")
 
 	waitForRecord(t, captureDir, "command")
+	checkCommandRecords(t, loadRecords(t, captureDir))
 	keepCapture(t, captureDir)
 	verify(t, captureDir, captureLog.String(), appLog.String())
 
@@ -427,5 +425,33 @@ func TestExampleWorksWithNightwatchDisabled(t *testing.T) {
 	}
 	if strings.Contains(captureLog.String(), "batch") {
 		t.Fatalf("Omni saw traffic: %s", captureLog.String())
+	}
+}
+
+// runArtisan runs `app artisan <args>` to the end.
+func runArtisan(t *testing.T, env []string, work, bin string, args ...string) {
+	t.Helper()
+	_, logs, done := start(t, "artisan "+args[0], env, work, bin, append([]string{"artisan"}, args...)...)
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Errorf("artisan %v did not finish", args)
+	}
+	t.Logf("artisan %v: %s", args, logs.String())
+}
+
+// checkCommandRecords wants one command record per artisan run, built-in ones
+// included, and no doubled record for a command the app registered itself.
+func checkCommandRecords(t *testing.T, records []map[string]any) {
+	t.Helper()
+	names := map[string]int{}
+	for _, r := range ofType(records, "command") {
+		names[r["name"].(string)]++
+		if r["exit_code"] != float64(0) {
+			t.Errorf("command %v exit code %v", r["name"], r["exit_code"])
+		}
+	}
+	if names["hello"] != 1 || names["schedule:list"] != 1 {
+		t.Errorf("want one record for hello and one for schedule:list, got %v", names)
 	}
 }

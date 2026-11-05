@@ -3,6 +3,7 @@ package goravel
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -154,5 +155,197 @@ func TestMail_SendIsRecorded(t *testing.T) {
 	}
 	if m.(*tracedMail).to != 0 {
 		t.Fatal("wrapper must not keep recipients between mails")
+	}
+}
+
+// runArtisan stands in for Goravel's console application: Run executes the
+// registered commands by name, like the real one, and never exits.
+type runArtisan struct {
+	console.Artisan
+	registered []console.Command
+	runs       [][]string
+	exitFlags  []bool
+	err        error
+	panics     bool
+	inside     func() // runs while "the command" executes
+}
+
+func (r *runArtisan) Register(c []console.Command) { r.registered = append(r.registered, c...) }
+
+func (r *runArtisan) Run(args []string, exit bool) error {
+	r.runs = append(r.runs, args)
+	r.exitFlags = append(r.exitFlags, exit)
+
+	if r.panics {
+		panic("boom")
+	}
+
+	if r.inside != nil {
+		r.inside()
+	}
+
+	return r.err
+}
+
+type exitRecorder struct{ codes []int }
+
+func (e *exitRecorder) exit(code int) { e.codes = append(e.codes, code) }
+
+func wrapRun(inner *runArtisan) (*artisanFacade, *exitRecorder, *atomic.Int32) {
+	flushes := &atomic.Int32{}
+	facade := WrapArtisan(inner, func(context.Context) { flushes.Add(1) }).(*artisanFacade)
+	exits := &exitRecorder{}
+	facade.exit = exits.exit
+
+	return facade, exits, flushes
+}
+
+func TestArtisanRun_EveryCommandRunIsRecordedEvenBuiltInOnes(t *testing.T) {
+	out := setup(t)
+	inner := &runArtisan{}
+	facade, exits, flushes := wrapRun(inner)
+
+	// schedule:list is registered by the framework before this client wraps
+	// anything, so the per-command wrapper never sees it. Run does.
+	if err := facade.Run([]string{"./app", "artisan", "schedule:list", "--no-ansi"}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	cmds := out.ofType("command")
+	if len(cmds) != 1 || cmds[0]["name"] != "schedule:list" || cmds[0]["command"] != "schedule:list --no-ansi" || cmds[0]["exit_code"] != int64(0) {
+		t.Fatalf("command record: %v", cmds)
+	}
+	if flushes.Load() != 1 || len(exits.codes) != 1 || exits.codes[0] != 0 {
+		t.Fatalf("it must flush before the process exits: flushes=%d exits=%v", flushes.Load(), exits.codes)
+	}
+	if inner.exitFlags[0] {
+		t.Fatal("the inner Run must not exit by itself: the exit comes after the flush")
+	}
+}
+
+func TestArtisanRun_ExitCodesFollowGoravel(t *testing.T) {
+	setup(t)
+	tests := []struct {
+		name     string
+		err      error
+		exit     bool
+		wantCode []int
+		wantErr  bool
+	}{
+		{"failure exits 1", errors.New("bad"), true, []int{1}, true},
+		{"cancelled exits 0", context.Canceled, true, []int{0}, true},
+		{"no exit flag returns the error", errors.New("bad"), false, nil, true},
+		{"no exit flag, success", nil, false, nil, false},
+		{"success exits 0", nil, true, []int{0}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			facade, exits, _ := wrapRun(&runArtisan{err: tt.err})
+			err := facade.Run([]string{"./app", "artisan", "x"}, tt.exit)
+			if (err != nil) != tt.wantErr || len(exits.codes) != len(tt.wantCode) || (len(tt.wantCode) == 1 && exits.codes[0] != tt.wantCode[0]) {
+				t.Fatalf("err=%v exits=%v", err, exits.codes)
+			}
+		})
+	}
+}
+
+func TestArtisanRun_FailedCommandIsRecordedWithExitCode1(t *testing.T) {
+	out := setup(t)
+	facade, _, _ := wrapRun(&runArtisan{err: errors.New("bad")})
+	_ = facade.Run([]string{"./app", "artisan", "migrate"}, false)
+	if cmds := out.ofType("command"); len(cmds) != 1 || cmds[0]["exit_code"] != int64(1) {
+		t.Fatalf("commands: %v", cmds)
+	}
+}
+
+func TestArtisanRun_NamesAndNonArtisanRuns(t *testing.T) {
+	out := setup(t)
+
+	// a normal start of the app is not a command
+	inner := &runArtisan{}
+	facade, exits, flushes := wrapRun(inner)
+	if err := facade.Run([]string{"./app"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.ofType("command")) != 0 || flushes.Load() != 0 || len(exits.codes) != 0 || !inner.exitFlags[0] {
+		t.Fatal("a run without artisan must be passed through untouched")
+	}
+
+	// "artisan" alone lists the commands; flags before the name are skipped
+	facade, _, _ = wrapRun(&runArtisan{})
+	_ = facade.Run([]string{"./app", "artisan"}, false)
+	_ = facade.Run([]string{"./app", "artisan", "--no-ansi", "cache:clear", "--tags=a"}, false)
+	names := []any{}
+	for _, c := range out.ofType("command") {
+		names = append(names, c["name"])
+	}
+	if len(names) != 2 || names[0] != "list" || names[1] != "cache:clear" {
+		t.Fatalf("names: %v", names)
+	}
+}
+
+func TestArtisanRun_RegisteredCommandJoinsTheRunInsteadOfDoubling(t *testing.T) {
+	out := setup(t)
+	inner := &runArtisan{}
+	facade, _, flushes := wrapRun(inner)
+	facade.Register([]console.Command{&fakeCommand{}, &otherCommand{}})
+
+	inner.inside = func() {
+		cctx := fakeConsoleCtx{ctx: context.Background()}
+		_ = inner.registered[0].Handle(cctx) // the command that was asked for: joins the run
+		_ = inner.registered[1].Handle(cctx) // another command called from inside: its own record
+	}
+	if err := facade.Run([]string{"./app", "artisan", "emails:send"}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	names := map[any]int{}
+	for _, c := range out.ofType("command") {
+		names[c["name"]]++
+	}
+	if names["emails:send"] != 1 || names["other:run"] != 1 || len(names) != 2 {
+		t.Fatalf("one record per command, not two for the same run: %v", names)
+	}
+	if flushes.Load() != 2 {
+		t.Fatalf("flushes: %d (the run, and the inner command's own)", flushes.Load())
+	}
+}
+
+type otherCommand struct{ fakeCommand }
+
+func (otherCommand) Signature() string { return "other:run" }
+
+func TestArtisanRun_PanicIsRecordedFlushedAndRethrown(t *testing.T) {
+	out := setup(t)
+	facade, _, flushes := wrapRun(&runArtisan{panics: true})
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("must rethrow")
+			}
+		}()
+		_ = facade.Run([]string{"./app", "artisan", "x"}, true)
+	}()
+	if cmds := out.ofType("command"); len(cmds) != 1 || cmds[0]["exit_code"] != int64(1) || flushes.Load() != 1 {
+		t.Fatalf("panic handling: %v flushes=%d", cmds, flushes.Load())
+	}
+}
+
+func TestPanicError_NeverPrintsTheValue(t *testing.T) {
+	secret := struct {
+		Token   string
+		Request *struct{ Body string }
+	}{Token: "s3cret-token", Request: &struct{ Body string }{Body: "password=hunter2"}}
+
+	got := panicError(secret).Error()
+	if strings.Contains(got, "s3cret") || strings.Contains(got, "hunter2") || !strings.HasPrefix(got, "panic: struct") {
+		t.Fatalf("a struct panic must be reported by type only: %q", got)
+	}
+	if panicError("plain text").Error() != "panic: plain text" {
+		t.Fatal("strings are kept")
+	}
+	original := errors.New("boom")
+	if !errors.Is(panicError(original), original) {
+		t.Fatal("errors are kept")
 	}
 }
