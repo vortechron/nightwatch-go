@@ -112,7 +112,8 @@ type JobInfo struct {
 type JobEnvelope struct {
 	TraceParent string
 	JobID       string
-	User        string
+	Connection  string
+	Queue       string
 }
 
 const envelopePrefix = "nwtp1|"
@@ -137,9 +138,9 @@ func StartJobDispatch(ctx context.Context, job JobInfo) (context.Context, EndFun
 
 type jobIDKey struct{}
 
-// EncodeJobEnvelope returns "nwtp1|<traceparent>|<job id>|<user>" for the span
-// in ctx, or "" when there is none.
-func EncodeJobEnvelope(ctx context.Context) string {
+// EncodeJobEnvelope returns "nwtp1|<traceparent>|<job id>|<connection>|<queue>"
+// for the span in ctx, or "" when there is none.
+func EncodeJobEnvelope(ctx context.Context, connection, queue string) string {
 	span := trace.SpanFromContext(ctx)
 	if !span.SpanContext().IsValid() {
 		return ""
@@ -150,7 +151,7 @@ func EncodeJobEnvelope(ctx context.Context) string {
 
 	jobID, _ := ctx.Value(jobIDKey{}).(string)
 
-	return envelopePrefix + carrier.Get("traceparent") + "|" + jobID
+	return envelopePrefix + strings.Join([]string{carrier.Get("traceparent"), jobID, connection, queue}, "|")
 }
 
 // DecodeJobEnvelope parses EncodeJobEnvelope output.
@@ -160,12 +161,12 @@ func DecodeJobEnvelope(value string) (JobEnvelope, bool) {
 		return JobEnvelope{}, false
 	}
 
-	parent, jobID, _ := strings.Cut(rest, "|")
-	if parent == "" {
+	parts := strings.SplitN(rest, "|", 4)
+	if len(parts) != 4 || parts[0] == "" {
 		return JobEnvelope{}, false
 	}
 
-	return JobEnvelope{TraceParent: parent, JobID: jobID}, true
+	return JobEnvelope{TraceParent: parts[0], JobID: parts[1], Connection: parts[2], Queue: parts[3]}, true
 }
 
 // IsJobEnvelope reports whether value looks like an envelope.

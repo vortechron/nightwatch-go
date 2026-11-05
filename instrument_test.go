@@ -24,12 +24,12 @@ func TestInstrument_QueueRoundTripKeepsTrace(t *testing.T) {
 	var carrier string
 	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
 		dctx, end := StartJobDispatch(ctx, JobInfo{Name: "jobs.SendEmail", Connection: "redis", Queue: "default"})
-		carrier = EncodeJobEnvelope(dctx)
+		carrier = EncodeJobEnvelope(dctx, "redis", "default")
 		end(nil)
 	})
 
 	env, ok := DecodeJobEnvelope(carrier)
-	if !ok || env.JobID == "" {
+	if !ok || env.JobID == "" || env.Connection != "redis" || env.Queue != "default" {
 		t.Fatalf("envelope: %q", carrier)
 	}
 
