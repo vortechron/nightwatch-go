@@ -24,13 +24,15 @@ type received struct {
 }
 
 type fakeOmni struct {
-	mu       sync.Mutex
-	got      []received
-	statuses []int // consumed one per ingest call, then 200
-	authBody string
-	authCode int
-	auths    atomic.Int32
-	srv      *httptest.Server
+	mu           sync.Mutex
+	got          []received
+	statuses     []int // consumed one per ingest call, then 200
+	authBody     string
+	retryAfter   string
+	alwaysStatus int
+	authCode     int
+	auths        atomic.Int32
+	srv          *httptest.Server
 }
 
 func newFakeOmni(t *testing.T) *fakeOmni {
@@ -54,10 +56,17 @@ func (f *fakeOmni) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.got = append(f.got, received{header: r.Header.Clone(), body: raw})
 	status := http.StatusOK
+	if f.alwaysStatus != 0 {
+		status = f.alwaysStatus
+	}
 	if len(f.statuses) > 0 {
 		status, f.statuses = f.statuses[0], f.statuses[1:]
 	}
+	retryAfter := f.retryAfter
 	f.mu.Unlock()
+	if retryAfter != "" {
+		w.Header().Set("Retry-After", retryAfter)
+	}
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, `{"error":"x"}`)
 }
@@ -232,7 +241,7 @@ func TestSender_BoundedMemoryDropsOldest(t *testing.T) {
 	if s.Dropped() != 6 || s.Pending() != 10 {
 		t.Fatalf("dropped %d pending %d", s.Dropped(), s.Pending())
 	}
-	if s.queue[0]["message"] == "oldest" {
+	if s.ring.at(0)["message"] == "oldest" {
 		t.Fatal("oldest record should be gone")
 	}
 }
@@ -323,4 +332,8 @@ func TestSender_DisabledDoesNothing(t *testing.T) {
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func blockingHandler(block chan struct{}) http.Handler {
+	return http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-block })
 }

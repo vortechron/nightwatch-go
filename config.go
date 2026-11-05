@@ -14,6 +14,12 @@ const (
 	defaultFlushInterval = 5 * time.Second
 	defaultTraceMaxWait  = 10 * time.Second
 	defaultMaxBuffered   = 5000
+	defaultMaxRetries    = 5
+	defaultMaxRetryTime  = 2 * time.Minute
+	defaultRootGrace     = time.Second
+	defaultMaxTraces     = 2000
+	defaultMaxSpans      = 2000
+	defaultMaxOwners     = 50000
 )
 
 // logLevels lists PSR-3 levels from the least to the most severe.
@@ -53,9 +59,22 @@ type Config struct {
 	BatchSize     int
 	FlushInterval time.Duration
 	MaxBuffered   int
+	// MaxRetries is how often one batch is sent again after a retryable
+	// failure before it is dropped and counted. MaxRetryTime bounds the same
+	// thing by time. Without a cap one stuck batch would block all later ones.
+	MaxRetries   int
+	MaxRetryTime time.Duration
+
 	// TraceMaxWait is how long the translator holds a trace's spans while it
 	// waits for the root execution span to end.
 	TraceMaxWait time.Duration
+	// RootGrace holds a finished execution this long before it is sent, so
+	// logs and spans that finish just after the root are still counted.
+	RootGrace time.Duration
+	// MaxTraces, MaxSpansPerTrace and MaxOwners bound the translator's memory.
+	MaxTraces        int
+	MaxSpansPerTrace int
+	MaxOwners        int
 
 	// Optional hooks. Nil values use safe defaults.
 	HTTPClient *http.Client
@@ -90,7 +109,14 @@ func ConfigFromEnv(getenv func(string) string, hostname string) Config {
 		BatchSize:     defaultBatchSize,
 		FlushInterval: defaultFlushInterval,
 		MaxBuffered:   defaultMaxBuffered,
+		MaxRetries:    defaultMaxRetries,
+		MaxRetryTime:  defaultMaxRetryTime,
 		TraceMaxWait:  defaultTraceMaxWait,
+		RootGrace:     defaultRootGrace,
+
+		MaxTraces:        defaultMaxTraces,
+		MaxSpansPerTrace: defaultMaxSpans,
+		MaxOwners:        defaultMaxOwners,
 	}
 
 	enabled := getenv("NIGHTWATCH_ENABLED")
@@ -157,4 +183,40 @@ func splitList(value string, fallback []string) []string {
 	}
 
 	return out
+}
+
+// withDefaults returns a copy where every zero or negative size and time
+// setting is replaced by its default, so a hand built Config is never
+// unbounded or able to panic a ticker. RootGrace may be 0 (send at once).
+func (c Config) withDefaults() Config {
+	c.BatchSize = positiveOr(c.BatchSize, defaultBatchSize)
+	c.MaxBuffered = positiveOr(c.MaxBuffered, defaultMaxBuffered)
+	c.MaxRetries = positiveOr(c.MaxRetries, defaultMaxRetries)
+	c.MaxTraces = positiveOr(c.MaxTraces, defaultMaxTraces)
+	c.MaxSpansPerTrace = positiveOr(c.MaxSpansPerTrace, defaultMaxSpans)
+	c.MaxOwners = positiveOr(c.MaxOwners, defaultMaxOwners)
+
+	if c.FlushInterval <= 0 {
+		c.FlushInterval = defaultFlushInterval
+	}
+
+	if c.TraceMaxWait <= 0 {
+		c.TraceMaxWait = defaultTraceMaxWait
+	}
+
+	if c.MaxRetryTime <= 0 {
+		c.MaxRetryTime = defaultMaxRetryTime
+	}
+
+	c.RootGrace = max(c.RootGrace, 0)
+
+	return c
+}
+
+func positiveOr(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+
+	return fallback
 }
