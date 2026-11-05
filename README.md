@@ -4,6 +4,9 @@ An OpenTelemetry based Nightwatch client for Go and Goravel. A Go app that uses 
 [Omni](https://omni.vortechron.com) (a Nightwatch compatible receiver) with the same record shapes as
 `laravel/nightwatch` v1.30.3, so Omni's dashboards work unchanged.
 
+nightwatch-go is an independent project. It is not made by, affiliated with or endorsed by
+Laravel. "Laravel" and "Laravel Nightwatch" are trademarks of Laravel Holdings Inc.
+
 ```
 OpenTelemetry spans + logs  ->  translator  ->  background sender  ->  POST /api/omni/ingest
 (Goravel already makes them)    (Nightwatch      (batch, gzip, retry)
