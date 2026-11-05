@@ -335,6 +335,7 @@ func TestProvider_RegisterBootWrapAndShutdown(t *testing.T) {
 	cfg.EXPECT().GetString(mock.Anything).Return("")
 	cfg.EXPECT().GetDuration(mock.Anything).Return(time.Duration(0))
 	cfg.EXPECT().Add(mock.Anything, mock.Anything)
+	cfg.EXPECT().Env(mock.Anything, mock.Anything).Return("").Maybe() // the client reads NIGHTWATCH_* through the config
 
 	artisan := mocksconsole.NewArtisan(t)
 	app.EXPECT().MakeCache().Return(mockscache.NewCache(t))

@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-const redactedValue = "[redacted]"
+const (
+	redactedValue = "[redacted]"
+	keyPassword   = "password"
+)
 
 // mandatoryRedactHeaders are always redacted, whatever NIGHTWATCH_REDACT_HEADERS
 // says. The PHP package defaults to Authorization, Cookie, Proxy-Authorization,
@@ -22,7 +25,7 @@ var mandatoryRedactHeaders = []string{
 // PHP sends the full URL unredacted; this client does not, because tokens in
 // links (password resets, signed URLs, OAuth callbacks) are common.
 var defaultRedactQuery = []string{
-	"password", "password_confirmation", "token", "access_token", "refresh_token", "id_token", "api_key", "apikey",
+	keyPassword, "password_confirmation", "token", "access_token", "refresh_token", "id_token", "api_key", "apikey",
 	"key", "secret", "client_secret", "signature", "code", "auth",
 }
 

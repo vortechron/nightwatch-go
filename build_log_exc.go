@@ -147,7 +147,7 @@ func (t *Translator) logRecord(entry sdklog.Record, x execInfo) Record {
 
 	record["level"] = psrLevel(entry)
 	record["message"] = Text(SanitizeUTF8(entry.Body().String()))
-	record["context"] = jsonString(logContext(entry))
+	record["context"] = jsonString(t.logContext(entry))
 	record["extra"] = "{}"
 
 	return record
@@ -165,17 +165,6 @@ func (t *Translator) logTime(entry sdklog.Record) time.Time {
 	}
 
 	return t.now()
-}
-
-func logContext(entry sdklog.Record) map[string]any {
-	context := map[string]any{}
-	entry.WalkAttributes(func(kv otellog.KeyValue) bool {
-		context[kv.Key] = logValue(kv.Value)
-
-		return true
-	})
-
-	return context
 }
 
 func logValue(value otellog.Value) any {

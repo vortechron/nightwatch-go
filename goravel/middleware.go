@@ -2,7 +2,6 @@ package goravel
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -91,7 +90,7 @@ func (m *middleware) Handle(ctx contractshttp.Context) {
 	defer func() {
 		recovered := recover()
 		if recovered != nil {
-			nightwatch.RecordExceptionOnSpan(span, fmt.Errorf("panic: %v", recovered), false)
+			nightwatch.RecordExceptionOnSpan(span, panicError(recovered), false)
 		}
 
 		m.finish(ctx, span, cfg, body)

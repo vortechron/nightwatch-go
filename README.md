@@ -41,7 +41,9 @@ WithMiddleware(func(m configuration.Middleware) {
 })
 ```
 
-3. Set the environment: `NIGHTWATCH_TOKEN` and `NIGHTWATCH_BASE_URL` (your Omni host).
+3. Set `NIGHTWATCH_TOKEN` and `NIGHTWATCH_BASE_URL` (your Omni host) in `.env` or in the process environment. The
+   provider reads every `NIGHTWATCH_*` setting (and `LOG_LEVEL`) through Goravel's config, which knows `.env` (Goravel
+   does not export `.env` to the process), and falls back to the process environment. Values in `Config` win over both.
 
 The provider refuses to start (panics at boot with `ErrExporterConflict`) when `telemetry.traces.exporter` or
 `telemetry.logs.exporter` already names another exporter, because Goravel allows one exporter per signal. Leave
@@ -121,6 +123,22 @@ and spans before it is sent; `TraceMaxWait` (10 s) for a root that never ends; `
 counted in `Client.Stats().Translator`. A child that still arrives after the grace period is sent alone and counted as
 a late child (the counters on its execution then miss it). Records are built and sent outside the translator's lock.
 
+## What never reaches Omni
+
+Records are built from the attributes the application sets on spans and log lines, and from nothing else:
+
+- `context.Context` values are never read or copied. Go cannot list them, and no code here asks for one by key.
+- Nothing is printed with `%v` or `%+v`. A panic value that is not an error or a string is reported by its type
+  only (`panic: struct { ... }`), so a panic with a request or a user inside cannot leak it.
+- Log lines: the attributes `request`, `response`, `user`, `owner`, `trace`, `headers`, `cookies`, `ctx`, `context`
+  and `root` are dropped (Goravel's debug log attaches the request context under these names). Any key that looks
+  secret (contains password, secret, token, authorization, cookie, api_key, credential, session, or is in the redact
+  lists) has its value replaced with `[redacted]`, at any depth. Strings are cut at 2 KB, nesting at 4 levels and the
+  whole context at 32 KB.
+- Exceptions carry the error message, the Go type, the stack and source lines. An error message is whatever the
+  application wrote into it; do not put secrets into error text.
+- Headers, URL query values and captured payloads are redacted (see the environment table).
+
 ## Span to record mapping
 
 Standard OpenTelemetry names are used where they exist. Nightwatch only fields use `nightwatch.*` attributes
@@ -136,7 +154,7 @@ and its children are sent together.
 | `log` | OpenTelemetry log record (Goravel `otel` log channel), linked by span id | child |
 | `queued-job` | span with `nightwatch.record=queued-job` (`StartJobDispatch`, `nwgoravel.Queue`) | child |
 | `job-attempt` | span with `nightwatch.record=job-attempt` (`StartJobAttempt`, wrapped jobs) | yes |
-| `command` | span with `nightwatch.record=command` (`StartCommand`, wrapped commands) | yes |
+| `command` | span with `nightwatch.record=command` (`StartCommand`; every `artisan` run, including built-in commands such as `schedule:list`, flushed before the process exits) | yes |
 | `scheduled-task` | span with `nightwatch.record=scheduled-task` (`StartScheduledTask`; registered `Schedule().Call` and `Schedule().Command` events, the latter also yields a `command` record) | yes |
 | `cache-event` | span with `nightwatch.record=cache-event` (`StartCache`, `WithContext(ctx)` caches) | child |
 | `mail` | span with `nightwatch.record=mail` (`nwgoravel.Mail`) | child |
