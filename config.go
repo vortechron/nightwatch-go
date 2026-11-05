@@ -1,0 +1,155 @@
+package nightwatch
+
+import (
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	defaultBaseURL       = "https://nightwatch.laravel.com"
+	defaultBatchSize     = 500
+	defaultFlushInterval = 5 * time.Second
+	defaultTraceMaxWait  = 10 * time.Second
+	defaultMaxBuffered   = 5000
+)
+
+var defaultRedactHeaders = []string{"Authorization", "Cookie", "Proxy-Authorization", "X-XSRF-TOKEN"}
+
+// logLevels lists PSR-3 levels from the least to the most severe.
+var logLevels = []string{"debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"}
+
+// Config holds every setting of the client. Build it with ConfigFromEnv and
+// change fields on the copy you get back.
+type Config struct {
+	Enabled bool
+	Token   string
+	// BaseURL is the Omni host. IngestURL, when set, skips discovery.
+	BaseURL   string
+	IngestURL string
+	Deploy    string
+	Server    string
+
+	RequestSampleRate       float64
+	CommandSampleRate       float64
+	ExceptionSampleRate     float64
+	ScheduledTaskSampleRate float64
+
+	IgnoreCacheEvents      bool
+	IgnoreMail             bool
+	IgnoreNotifications    bool
+	IgnoreOutgoingRequests bool
+	IgnoreQueries          bool
+	LogLevel               string
+	RedactHeaders          []string
+
+	// BatchSize and FlushInterval trigger a send. MaxBuffered bounds memory:
+	// past it the oldest records are dropped and counted.
+	BatchSize     int
+	FlushInterval time.Duration
+	MaxBuffered   int
+	// TraceMaxWait is how long the translator holds a trace's spans while it
+	// waits for the root execution span to end.
+	TraceMaxWait time.Duration
+
+	// Optional hooks. Nil values use safe defaults.
+	HTTPClient *http.Client
+	Logger     *slog.Logger
+}
+
+// ConfigFromEnv reads the NIGHTWATCH_* variables (same names as the PHP
+// package). getenv is usually os.Getenv. hostname is the default server name.
+func ConfigFromEnv(getenv func(string) string, hostname string) Config {
+	cfg := Config{
+		Token:     getenv("NIGHTWATCH_TOKEN"),
+		BaseURL:   strings.TrimRight(firstNonEmpty(getenv("NIGHTWATCH_BASE_URL"), defaultBaseURL), "/"),
+		IngestURL: getenv("NIGHTWATCH_INGEST_URL"),
+		Deploy:    getenv("NIGHTWATCH_DEPLOY"),
+		Server:    firstNonEmpty(getenv("NIGHTWATCH_SERVER"), hostname),
+
+		RequestSampleRate:       rate(getenv("NIGHTWATCH_REQUEST_SAMPLE_RATE")),
+		CommandSampleRate:       rate(getenv("NIGHTWATCH_COMMAND_SAMPLE_RATE")),
+		ExceptionSampleRate:     rate(getenv("NIGHTWATCH_EXCEPTION_SAMPLE_RATE")),
+		ScheduledTaskSampleRate: rate(getenv("NIGHTWATCH_SCHEDULED_TASK_SAMPLE_RATE")),
+
+		IgnoreCacheEvents:      truthy(getenv("NIGHTWATCH_IGNORE_CACHE_EVENTS")),
+		IgnoreMail:             truthy(getenv("NIGHTWATCH_IGNORE_MAIL")),
+		IgnoreNotifications:    truthy(getenv("NIGHTWATCH_IGNORE_NOTIFICATIONS")),
+		IgnoreOutgoingRequests: truthy(getenv("NIGHTWATCH_IGNORE_OUTGOING_REQUESTS")),
+		IgnoreQueries:          truthy(getenv("NIGHTWATCH_IGNORE_QUERIES")),
+		LogLevel:               strings.ToLower(firstNonEmpty(getenv("NIGHTWATCH_LOG_LEVEL"), getenv("LOG_LEVEL"), "debug")),
+		RedactHeaders:          splitList(getenv("NIGHTWATCH_REDACT_HEADERS"), defaultRedactHeaders),
+
+		BatchSize:     defaultBatchSize,
+		FlushInterval: defaultFlushInterval,
+		MaxBuffered:   defaultMaxBuffered,
+		TraceMaxWait:  defaultTraceMaxWait,
+	}
+
+	enabled := getenv("NIGHTWATCH_ENABLED")
+	cfg.Enabled = cfg.Token != "" && (enabled == "" || truthy(enabled))
+
+	return cfg
+}
+
+// LogAllowed reports whether a log at level reaches Omni under LogLevel.
+// Unknown levels always pass.
+func (c Config) LogAllowed(level string) bool {
+	return levelIndex(strings.ToLower(level)) >= levelIndex(c.LogLevel)
+}
+
+func levelIndex(level string) int {
+	for i, name := range logLevels {
+		if name == level {
+			return i
+		}
+	}
+
+	return len(logLevels)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+
+	return ""
+}
+
+func truthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func rate(value string) float64 {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || parsed < 0 || parsed > 1 {
+		return 1
+	}
+
+	return parsed
+}
+
+func splitList(value string, fallback []string) []string {
+	if strings.TrimSpace(value) == "" {
+		return append([]string(nil), fallback...)
+	}
+
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+
+	return out
+}

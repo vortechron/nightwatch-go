@@ -77,3 +77,18 @@ func TestDecoderRejectsWholeBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestValidateBody(t *testing.T) {
+	if _, err := Validate([]byte(`{"records":[{"t":"log","trace_id":"`+goodUUID+`","context":"{}"}]}`), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Validate([]byte(`{"records":[{"t":"log","trace_id":"bad"}]}`), ""); err == nil || err.Status != 503 {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := Validate([]byte(`not json`), ""); err == nil || err.Status != 400 {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := Validate([]byte(`x`), "br"); err == nil || err.Status != 415 {
+		t.Fatalf("got %v", err)
+	}
+}
