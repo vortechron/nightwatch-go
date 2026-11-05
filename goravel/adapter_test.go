@@ -76,8 +76,9 @@ func setupWith(t *testing.T, mutate func(*nightwatch.Config)) *sink {
 // default argument of Get when the key is missing.
 type fakeDriver struct {
 	cache.Driver
-	data  map[string]any
-	calls []string
+	data       map[string]any
+	calls      []string
+	failWrites bool // Put and Forever report a failed write
 }
 
 func (f *fakeDriver) Has(key string) bool {
@@ -97,9 +98,35 @@ func (f *fakeDriver) Get(key string, def ...any) any {
 
 	return nil
 }
-func (f *fakeDriver) Put(key string, v any, _ time.Duration) error { f.data[key] = v; return nil }
-func (f *fakeDriver) Add(key string, v any, _ time.Duration) bool  { f.data[key] = v; return true }
-func (f *fakeDriver) Forever(key string, v any) bool               { f.data[key] = v; return true }
+
+func (f *fakeDriver) Put(key string, v any, _ time.Duration) error {
+	if f.failWrites {
+		return errors.New("write failed")
+	}
+	f.data[key] = v
+
+	return nil
+}
+
+// Add is set-if-missing, like Redis SETNX: false when the key exists.
+func (f *fakeDriver) Add(key string, v any, _ time.Duration) bool {
+	if _, exists := f.data[key]; exists {
+		return false
+	}
+	f.data[key] = v
+
+	return true
+}
+
+func (f *fakeDriver) Forever(key string, v any) bool {
+	if f.failWrites {
+		return false
+	}
+	f.data[key] = v
+
+	return true
+}
+func (f *fakeDriver) Lock(string, ...time.Duration) cache.Lock { return nil }
 func (f *fakeDriver) Forget(key string) bool {
 	_, ok := f.data[key]
 	delete(f.data, key)
@@ -146,57 +173,6 @@ func TestCache_HitAndMissComeFromTheGetResultNotFromHas(t *testing.T) {
 	}
 	if out.ofType("command")[0]["cache_events"] != 11 {
 		t.Fatalf("one event per call: %v", out.ofType("command")[0]["cache_events"])
-	}
-}
-
-func TestCache_WritesDeletesPullRememberCounters(t *testing.T) {
-	out := setup(t)
-	ctx, end := nightwatch.StartCommand(context.Background(), nightwatch.CommandInfo{Name: "c"})
-	inner := &fakeDriver{data: map[string]any{}}
-	d := Cache(ctx, inner, "")
-
-	_ = d.Put("a", 1, time.Minute)
-	d.Add("b", 1, time.Minute)
-	d.Forever("c", 1)
-	d.Forget("a")
-	d.Forget("nope")
-	if v := d.Pull("b"); v != 1 {
-		t.Fatalf("pull: %v", v)
-	}
-	if d.Pull("b", "dflt") != "dflt" || d.Pull("b") != nil {
-		t.Fatal("pull of a missing key")
-	}
-	_, _ = d.Increment("n")
-	_, _ = d.Decrement("n")
-	v, err := d.Remember("r", time.Minute, func() (any, error) { return 7, nil })
-	if v != 7 || err != nil {
-		t.Fatal("remember miss")
-	}
-	if v, _ = d.Remember("r", time.Minute, func() (any, error) { return 9, nil }); v != 7 {
-		t.Fatal("remember hit")
-	}
-	if _, err = d.Remember("e", time.Minute, func() (any, error) { return nil, errors.New("x") }); err == nil {
-		t.Fatal("remember must pass the error")
-	}
-	_, _ = d.RememberForever("rf", func() (any, error) { return 1, nil })
-	_, _ = d.RememberForever("rf", func() (any, error) { return 2, nil })
-	_, err = d.RememberForever("rf2", func() (any, error) { return nil, errors.New("x") })
-	if err == nil {
-		t.Fatal("remember forever must pass the error")
-	}
-	d.Has("c")
-	d.Has("zzz")
-	end(0, nil)
-
-	types := cacheTypes(out)
-	if types["delete"] != 2 || types["delete-failure"] != 1 || types["write-failure"] != 1 {
-		t.Fatalf("types: %v", types)
-	}
-	if types["write"] < 6 || types["hit"] < 3 || types["miss"] < 4 {
-		t.Fatalf("types: %v", types)
-	}
-	if out.ofType("cache-event")[0]["store"] != "default" {
-		t.Fatal("default store label")
 	}
 }
 

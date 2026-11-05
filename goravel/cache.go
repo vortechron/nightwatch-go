@@ -39,7 +39,15 @@ func (s *storeFacade) WithContext(ctx context.Context) cache.Driver {
 }
 
 // Cache wraps a cache driver so its calls become cache-event records of the
-// execution in ctx. store is the label shown in Omni. Lock is not recorded.
+// execution in ctx. store is the label shown in Omni.
+//
+// It records what Laravel's cache repository fires events for, and nothing else:
+// hit or miss for reads (Get, GetString ..., Has, and the read inside Pull and
+// Remember), write or write-failure for Put and Forever, delete or
+// delete-failure for Forget (and the one inside Pull). Add, Increment,
+// Decrement and Lock fire nothing in Laravel (add on a store that has add(), as
+// every Redis, database or array store does), so they are passed through; in
+// particular a set-if-missing on an existing key is not a failed write.
 //
 // Outside a Nightwatch execution it returns inner itself.
 func Cache(ctx context.Context, inner cache.Driver, store string) cache.Driver {
@@ -150,14 +158,6 @@ func (c *tracedCache) Put(key string, value any, ttl time.Duration) error {
 	return err //nolint:wrapcheck // passthrough of the cache error
 }
 
-func (c *tracedCache) Add(key string, value any, ttl time.Duration) bool {
-	_, end := nightwatch.StartCache(c.ctx, c.store, key)
-	added := c.Driver.Add(key, value, ttl)
-	end(writeKind(added), ttl, nil)
-
-	return added
-}
-
 func (c *tracedCache) Forever(key string, value any) bool {
 	_, end := nightwatch.StartCache(c.ctx, c.store, key)
 	saved := c.Driver.Forever(key, value)
@@ -180,36 +180,23 @@ func (c *tracedCache) Forget(key string) bool {
 	return removed
 }
 
-// Pull reads a key and removes it: a hit or miss, then a delete on a hit.
+// Pull is Laravel's get() followed by forget(): a hit or miss, then a delete
+// event whether or not the key was there (a missing key is a delete-failure,
+// as in Laravel).
 func (c *tracedCache) Pull(key string, def ...any) any {
 	value, hit := c.lookup(key)
-	if !hit {
-		if len(def) > 0 {
-			return def[0]
-		}
-
-		return nil
-	}
 
 	c.Forget(key)
 
-	return value
-}
+	if hit {
+		return value
+	}
 
-func (c *tracedCache) Increment(key string, value ...int64) (int64, error) {
-	_, end := nightwatch.StartCache(c.ctx, c.store, key)
-	result, err := c.Driver.Increment(key, value...)
-	end(writeKind(err == nil), 0, nil)
+	if len(def) > 0 {
+		return def[0]
+	}
 
-	return result, err //nolint:wrapcheck // passthrough of the cache error
-}
-
-func (c *tracedCache) Decrement(key string, value ...int64) (int64, error) {
-	_, end := nightwatch.StartCache(c.ctx, c.store, key)
-	result, err := c.Driver.Decrement(key, value...)
-	end(writeKind(err == nil), 0, nil)
-
-	return result, err //nolint:wrapcheck // passthrough of the cache error
+	return nil
 }
 
 // Remember is the driver's Remember built from Get and Put, so the hit or miss

@@ -156,7 +156,7 @@ and its children are sent together.
 | `job-attempt` | span with `nightwatch.record=job-attempt` (`StartJobAttempt`, wrapped jobs) | yes |
 | `command` | span with `nightwatch.record=command` (`StartCommand`; every `artisan` run, including built-in commands such as `schedule:list`, flushed before the process exits) | yes |
 | `scheduled-task` | span with `nightwatch.record=scheduled-task` (`StartScheduledTask`; registered `Schedule().Call` and `Schedule().Command` events, the latter also yields a `command` record) | yes |
-| `cache-event` | span with `nightwatch.record=cache-event` (`StartCache`, `WithContext(ctx)` caches) | child |
+| `cache-event` | span with `nightwatch.record=cache-event` (`StartCache`, `WithContext(ctx)` caches). Only what Laravel records: `hit`/`miss` for Get, Has and the read inside Pull and Remember; `write`/`write-failure` for Put and Forever (and the write inside Remember); `delete`/`delete-failure` for Forget (and the one inside Pull, which always forgets). `Add`, `Increment`, `Decrement` and `Lock` record nothing, like Laravel's `add()` on a store that has one, so a set-if-missing on an existing key never shows as a failed write | child |
 | `mail` | span with `nightwatch.record=mail` (`nwgoravel.Mail`) | child |
 | `notification` | span with `nightwatch.record=notification` (`StartNotification`) | child |
 | `user` | `enduser.id` plus `nightwatch.user.name` or `.username`, once per id | none |
@@ -211,7 +211,7 @@ cd example/goravel && go test -run TestExample .   # needs Redis (DB 15); starts
 
 - Query `file` and `line` are empty (Goravel's database spans do not carry the caller).
 - `route_action` is empty unless you set `nightwatch.route.action` on the span.
-- `Cache().Lock` is not recorded. Cache calls without `WithContext(ctx)` are not recorded.
+- `Cache().Lock`, `Add`, `Increment` and `Decrement` are not recorded (as in Laravel). Cache calls without `WithContext(ctx)` are not recorded.
 - Queue dispatch and mail need `nwgoravel.Queue(ctx, ...)` and `nwgoravel.Mail(ctx, ...)`; see above for why.
 - A worker without the provider would hand the trailing envelope string to `Handle`.
 - Goravel's mailer always sends SMTP AUTH, which a plain Mailpit refuses (the example's test brings a fake SMTP).
