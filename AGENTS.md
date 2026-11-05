@@ -33,4 +33,6 @@ Go 1.26, toolchain go1.27.3 (`GOTOOLCHAIN=auto`). Pin OpenTelemetry to the versi
 - Redact headers and payloads before data leaves the process. Payload capture stays off by default.
 - The example and its test must start few processes and stop all of them (`t.Cleanup`). Goravel retries a failing
   job at once and without limit unless the job has `ShouldRetry`; always give example jobs one.
+- No package level mutable state: the Goravel client lives in the container (`nwgoravel.BindingClient`), the memory
+  reading in the Translator.
 - Do not push or tag without the owner asking.

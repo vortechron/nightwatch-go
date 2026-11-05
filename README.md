@@ -21,8 +21,10 @@ Needs Go 1.26. The core package `nightwatch` does not import Goravel. The subpac
 
 ## Goravel wiring
 
-1. Add the provider last in `bootstrap/providers.go`. It points Goravel telemetry at Nightwatch, starts the
-   sender, wraps cache, schedule, console commands and queue jobs, and flushes on shutdown.
+1. Add the provider last in `bootstrap/providers.go`. It binds the client in Goravel's container (key
+   `nwgoravel.BindingClient`, read it with `nwgoravel.ClientFrom(app)`; there is no package level client), points
+   telemetry at Nightwatch, starts the sender, wraps cache, schedule, console commands and queue jobs, and flushes on
+   shutdown. Use `&nwgoravel.ServiceProvider{Config: &cfg}` to pass a hand built `nightwatch.Config`.
 
 ```go
 import nwgoravel "github.com/vortechron/nightwatch-go/goravel"
@@ -41,13 +43,26 @@ WithMiddleware(func(m configuration.Middleware) {
 
 3. Set the environment: `NIGHTWATCH_TOKEN` and `NIGHTWATCH_BASE_URL` (your Omni host).
 
-Where Goravel's API carries no `context.Context`, wrap per request:
+The provider refuses to start (panics at boot with `ErrExporterConflict`) when `telemetry.traces.exporter` or
+`telemetry.logs.exporter` already names another exporter, because Goravel allows one exporter per signal. Leave
+`OTEL_TRACES_EXPORTER` and `OTEL_LOGS_EXPORTER` empty. It also tightens the span and log batch processors to export
+at least every 500 ms, so children that end just after their request still count.
+
+Where Goravel's API carries no `context.Context`, wrap per request. Go has no request-global state, so the
+context has to be passed; Goravel's `Queue().Job(...).Dispatch()` and `Mail().Send()` cannot be wrapped globally
+(no ctx to link to), and a provider level wrap would only create records with no execution:
 
 ```go
-nwgoravel.Queue(ctx, facades.Queue()).Job(&jobs.Send{}, args).OnQueue("mail").Dispatch() // keeps the trace
+nwgoravel.Queue(ctx, facades.Queue()).Job(&jobs.Send{}, args).OnQueue("mail").Dispatch() // keeps trace and user; also Chain(...)
 nwgoravel.Mail(ctx, facades.Mail()).To(addrs).Send(m)                                     // mail record
 facades.Cache().WithContext(ctx).Get("k")                                                 // cache-event (global wrap)
 ```
+
+Every worker that runs these jobs must run the provider too: the trace travels as a trailing job argument that the
+wrapped job removes before your `Handle` runs. The argument is a string `nwtp2|<traceparent>|<job id>|<connection>|<queue>|<user>|<sync>|<crc32>`;
+only a last argument that passes the strict check (tag, W3C traceparent, UUID, checksum) is removed. Evidence for
+this choice: Goravel's `ConvertArgs` silently drops an argument with an unknown `Type`, so a dedicated type would
+never reach `Handle`; and `Handle(args ...any)` is the only place the framework gives a job anything.
 
 A job that does database or HTTP work implements `HandleContext(ctx, args...)` (`nwgoravel.ContextJob`) so that
 work joins the trace. Use `facades.Orm().WithContext(ctx)` and `facades.Log().WithContext(ctx)` in handlers.
@@ -77,12 +92,24 @@ Same names as the PHP package.
 | `NIGHTWATCH_IGNORE_QUERIES`, `_OUTGOING_REQUESTS`, `_CACHE_EVENTS`, `_MAIL`, `_NOTIFICATIONS` | `false` | Skip that record type (counters stay true) |
 | `NIGHTWATCH_LOG_LEVEL` | `LOG_LEVEL` or `debug` | Minimum log level sent |
 | `NIGHTWATCH_REDACT_HEADERS` | the six below | Extra header names to redact. Always redacted: Authorization, Cookie, Proxy-Authorization, Set-Cookie, X-CSRF-TOKEN, X-XSRF-TOKEN. Values become `[redacted]`, at capture time and again before send |
-| `NIGHTWATCH_CAPTURE_REQUEST_PAYLOAD` | `false` | Keep the body of 500 responses |
-| `NIGHTWATCH_REDACT_PAYLOAD_FIELDS` | `_token,password,password_confirmation` | Fields blanked in a captured body |
+| `NIGHTWATCH_CAPTURE_REQUEST_PAYLOAD` | `false` | Keep the body of 500 responses (JSON, up to 64 KB, redacted before it leaves the middleware) |
+| `NIGHTWATCH_REDACT_PAYLOAD_FIELDS` | `_token,password,password_confirmation` | Fields blanked in a captured body, at any depth |
+| `NIGHTWATCH_CAPTURE_EXCEPTION_SOURCE_CODE` | `true` | Add the 5 lines around each frame for the first 10 application frames whose file can be read (never the standard library or `/pkg/mod/`); `null` otherwise |
 
 Sender behaviour: batch at 500 records or 5 s, gzip, `Idempotency-Key` per batch (reused on retry), retry on
-network errors, 429 and 5xx with backoff, drop other 4xx with one log line, pause 15 minutes on 402, at most
-5000 records in memory (oldest dropped and counted), flush on shutdown. `Enqueue` never blocks.
+network errors, 429 and 5xx with backoff (at least `Retry-After`, 5 minutes at most), at most `MaxRetries` (5)
+retries or `MaxRetryTime` (2 min) per batch and then the batch is dropped and counted so one stuck batch cannot block
+the next, drop other 4xx with one log line, pause 15 minutes on 402, at most `MaxBuffered` (5000) records in a ring
+buffer (oldest dropped and counted; 0 means the default, never unbounded). `Enqueue` never blocks and is O(records).
+On `Shutdown` a failing batch gets one final attempt and is then dropped; when the context ends first the rest is
+dropped and counted; `Enqueue` after `Shutdown` is dropped and counted. `Client.Stats()` reports pending, dropped and
+the translator counters.
+
+Translator bounds (config fields, defaults in brackets): `RootGrace` (1 s) a finished execution waits for late logs
+and spans before it is sent; `TraceMaxWait` (10 s) for a root that never ends; `MaxTraces` (2000), `MaxSpansPerTrace`
+(2000), `MaxOwners` (50000). Over a cap the oldest trace is sent as an orphan or the extra span is dropped, always
+counted in `Client.Stats().Translator`. A child that still arrives after the grace period is sent alone and counted as
+a late child (the counters on its execution then miss it). Records are built and sent outside the translator's lock.
 
 ## Span to record mapping
 
@@ -100,7 +127,7 @@ and its children are sent together.
 | `queued-job` | span with `nightwatch.record=queued-job` (`StartJobDispatch`, `nwgoravel.Queue`) | child |
 | `job-attempt` | span with `nightwatch.record=job-attempt` (`StartJobAttempt`, wrapped jobs) | yes |
 | `command` | span with `nightwatch.record=command` (`StartCommand`, wrapped commands) | yes |
-| `scheduled-task` | span with `nightwatch.record=scheduled-task` (`StartScheduledTask`, wrapped `Schedule().Call`) | yes |
+| `scheduled-task` | span with `nightwatch.record=scheduled-task` (`StartScheduledTask`; registered `Schedule().Call` and `Schedule().Command` events, the latter also yields a `command` record) | yes |
 | `cache-event` | span with `nightwatch.record=cache-event` (`StartCache`, `WithContext(ctx)` caches) | child |
 | `mail` | span with `nightwatch.record=mail` (`nwgoravel.Mail`) | child |
 | `notification` | span with `nightwatch.record=notification` (`StartNotification`) | child |
@@ -129,15 +156,33 @@ golangci-lint run ./... && go vet ./... && go test -race ./...
 cd example/goravel && go test -run TestExample .   # needs Redis (DB 15); starts and stops its own processes
 ```
 
+## Differences from the PHP package
+
+- `NIGHTWATCH_REDACT_HEADERS` adds names to the always-redacted six; PHP replaces its list. Redacted values are
+  `[redacted]`; PHP writes `[N bytes redacted]` and keeps the auth scheme and cookie names.
+- `NIGHTWATCH_INGEST_URL` (Go only) skips `POST /api/agent-auth`; the PHP package has no such setting.
+- `execution_stage` is always `action` for children (PHP names the middleware, render and other stages); the
+  request's `bootstrap`, `render`, `sending` and `terminating` are 0 and `action` is the whole time.
+- Sampling is decided from the trace id, so a request and the jobs it queued agree; PHP rolls dice per execution.
+- Exceptions: each reported error counts, like PHP. The one skipped event is Goravel's own echo of an error this
+  client already recorded with a stack (same span, same message, echo has no stack), once per original.
+- A stack-less exception (for example one Goravel's middleware recorded) uses the span name as file and groups by
+  class, span and message, so distinct errors do not collapse. Use `ReportError` for a real stack.
+- Exception `class` is the Go type (`*errors.errorString`); `*fmt.wrapError` is unwrapped; panics are class `panic`.
+- Payload capture reads only JSON bodies up to 64 KB and keeps them for 500 responses only.
+- Job attempts: the attempt number is counted per job id in one worker, because Goravel passes it neither to `Handle`
+  nor anywhere a wrapper can see before the run (the worker's `tries` is a local variable; it only reaches
+  `ShouldRetry`, after the run). A job queued with the sync driver is not a job attempt (Nightwatch records none).
+- Mail `mailer` is `smtp` (the only transport Goravel's mailer has) unless you pass a name to `nwgoravel.Mail`.
+
 ## Known gaps
 
-- Stage timings: `action` gets the whole request time; `bootstrap`, `render`, `sending`, `terminating` are 0.
 - Query `file` and `line` are empty (Goravel's database spans do not carry the caller).
 - `route_action` is empty unless you set `nightwatch.route.action` on the span.
-- Exception class is the Go type (`*errors.errorString` for most errors), so `ReportError` with a stack is
-  needed for good grouping. Panics are grouped as class `panic`.
-- Job attempts are counted per job id inside one worker; Goravel does not pass the attempt number.
-- `Schedule().Command(...)` runs as a `command`, not a `scheduled-task`.
+- `Cache().Lock` is not recorded. Cache calls without `WithContext(ctx)` are not recorded.
+- Queue dispatch and mail need `nwgoravel.Queue(ctx, ...)` and `nwgoravel.Mail(ctx, ...)`; see above for why.
+- A worker without the provider would hand the trailing envelope string to `Handle`.
 - Goravel's mailer always sends SMTP AUTH, which a plain Mailpit refuses (the example's test brings a fake SMTP).
-- Chained jobs (`Queue().Chain`) do not carry the trace.
 - Goravel's own HTTP client did not emit spans in the example even with `enable_telemetry`; use `nwgoravel.Transport`.
+- The scheduler and queue worker run callbacks with no context, so work inside a plain `Schedule().Call` closure is
+  not linked to its task; jobs get a context through `ContextJob.HandleContext`.
