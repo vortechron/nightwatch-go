@@ -108,7 +108,7 @@ Same names as the PHP package.
 | `NIGHTWATCH_SCHEDULED_TASK_SAMPLE_RATE` | `1.0` | Scheduled tasks |
 | `NIGHTWATCH_EXCEPTION_SAMPLE_RATE` | `1.0` | A dropped execution with an unhandled exception is kept with this chance |
 | `NIGHTWATCH_IGNORE_QUERIES`, `_OUTGOING_REQUESTS`, `_CACHE_EVENTS`, `_MAIL`, `_NOTIFICATIONS` | `false` | Skip that record type (counters stay true) |
-| `NIGHTWATCH_IGNORE_PATHS` | empty | Comma separated request path globs that are not recorded at all: no request record, no queries, logs or exceptions of it, nothing in the counters. Example `/build/*,/favicon.ico`. `*` matches any characters including `/`, so `/build/*` covers everything under `/build/` (not `/build` itself) and `*.png` every png; the query string is ignored; matching is case sensitive. Add more in code with `nwgoravel.WithIgnorePaths(...)` |
+| `NIGHTWATCH_IGNORE_PATHS` | empty | Comma separated request path globs that are not recorded at all: no request record, no queries, logs or exceptions of it, nothing in the counters. Example `/build/**,/favicon.ico`. See "Ignoring paths" below for the exact rules. Add more in code with `nwgoravel.WithIgnorePaths(...)` |
 | `NIGHTWATCH_LOG_LEVEL` | `LOG_LEVEL` or `debug` | Minimum log level sent |
 | `NIGHTWATCH_REDACT_HEADERS` | the six below | Extra header names to redact. Always redacted: Authorization, Cookie, Proxy-Authorization, Set-Cookie, X-CSRF-TOKEN, X-XSRF-TOKEN. Values become `[redacted]`, at capture time and again before send |
 | `NIGHTWATCH_REDACT_QUERY` | the defaults below | Extra query parameter names to redact. Always redacted (any case): password, password_confirmation, token, access_token, refresh_token, id_token, api_key, apikey, key, secret, client_secret, signature, code, auth |
@@ -130,6 +130,22 @@ and spans before it is sent; `TraceMaxWait` (10 s) for a root that never ends; `
 (2000), `MaxOwners` (50000). Over a cap the oldest trace is sent as an orphan or the extra span is dropped, always
 counted in `Client.Stats().Translator`. A child that still arrives after the grace period is sent alone and counted as
 a late child (the counters on its execution then miss it). Records are built and sent outside the translator's lock.
+
+## Ignoring paths
+
+`NIGHTWATCH_IGNORE_PATHS=/build/**,/favicon.ico` keeps static assets out of Omni. Rules:
+
+- A pattern is matched against the whole path, case sensitive. The path is the one the router routes on: the
+  request's decoded `URL.Path`, which never contains the query string.
+- `*` matches any characters except `/` (one path segment). `**` matches any characters including `/` (any depth).
+  Everything else matches itself.
+  - `/build/*` covers `/build/app.js` but not `/build/assets/app.js`; `/build/**` covers both.
+  - Neither covers `/build` itself. `/favicon.ico` covers only `/favicon.ico` (not `/favicon.ico/`).
+  - `/*.png` covers `/logo.png` only; use `**.png` for every png at any depth.
+- Nothing is cut or cleaned. A `?` or `#` in the path is a normal character: `/favicon.ico%3Fanything` decodes to
+  `/favicon.ico?anything` and is not the favicon, so it is recorded. A path with a `.` or `..` segment or an empty
+  segment (`//`) is never ignored, whatever the patterns say.
+- The middleware and `IgnoreFilter` use the same function, so they always agree.
 
 ## What never reaches Omni
 

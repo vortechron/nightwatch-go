@@ -50,7 +50,8 @@ type Config struct {
 	// RedactHeaders always includes the mandatory secrets; env adds more.
 	RedactHeaders []string
 	// IgnorePaths are request path globs that are not recorded at all (static
-	// assets, health checks). Empty by default. See PathIgnored for the syntax.
+	// assets, health checks). Empty by default. See PathIgnored for the syntax:
+	// "*" stays in one path segment, "**" goes any depth ("/build/**").
 	IgnorePaths []string
 	// RedactQuery lists query parameters whose values are replaced in URLs.
 	// It always includes the defaults; NIGHTWATCH_REDACT_QUERY adds names.

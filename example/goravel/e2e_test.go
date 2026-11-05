@@ -189,7 +189,7 @@ func TestExampleReportsEveryRecordType(t *testing.T) {
 		"JWT_SECRET=0123456789abcdef0123456789abcdef", "DB_DATABASE=" + filepath.Join(work, "example.sqlite"),
 		"MAIL_HOST=127.0.0.1", "MAIL_PORT=" + smtpPort, "MAIL_USERNAME=user", "MAIL_PASSWORD=pass",
 		"OUTGOING_URL=http://127.0.0.1:" + capturePort + "/api/omni/ping",
-		"NIGHTWATCH_IGNORE_PATHS=/build/*,/favicon.ico",
+		"NIGHTWATCH_IGNORE_PATHS=/build/**,/favicon.ico",
 	}
 	appEnv := append(append([]string{}, env...), "QUEUE_NAME="+queueName)
 	app, appLog, _ := start(t, "example", appEnv, work, filepath.Join(bin, "example"))

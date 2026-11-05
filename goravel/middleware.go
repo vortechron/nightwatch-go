@@ -32,7 +32,9 @@ func WithUserResolver(resolve UserResolver) Option {
 
 // WithIgnorePaths adds request path globs that are not recorded, next to the
 // ones in NIGHTWATCH_IGNORE_PATHS. See nightwatch.PathIgnored for the syntax:
-// "/build/*" covers everything under /build/, the query string is ignored.
+// "*" stays inside one path segment, "**" goes any depth, so "/build/**" covers
+// everything under /build/. The pattern is matched against the request's
+// decoded URL.Path; the query string is not part of it.
 func WithIgnorePaths(patterns ...string) Option {
 	return func(m *middleware) { m.ignore = append(m.ignore, patterns...) }
 }
@@ -43,11 +45,24 @@ type middleware struct {
 	ignore  []string
 }
 
-// ignored reports whether the request path is on an ignore list.
-func (m *middleware) ignored(client *nightwatch.Client, path string) bool {
+// ignored reports whether the request is on an ignore list. The middleware and
+// IgnoreFilter both call this, so they always agree.
+func (m *middleware) ignored(client *nightwatch.Client, req contractshttp.ContextRequest) bool {
 	patterns := append(append([]string(nil), client.Config().IgnorePaths...), m.ignore...)
 
-	return nightwatch.PathIgnored(patterns, path)
+	return nightwatch.PathIgnored(patterns, routedPath(req))
+}
+
+// routedPath is the path the router routes on: the decoded URL.Path of the
+// request, without the query string. It is not trimmed or cleaned. A request
+// for /favicon.ico%3Fx has the path "/favicon.ico?x", which is not the
+// favicon, and must not be ignored as if it were.
+func routedPath(req contractshttp.ContextRequest) string {
+	if origin := req.Origin(); origin != nil && origin.URL != nil {
+		return origin.URL.Path
+	}
+
+	return req.Path()
 }
 
 // IgnoreFilter is for Goravel's telemetry middleware:
@@ -70,7 +85,7 @@ func IgnoreFilter(getApp func() contractsfoundation.Application, options ...Opti
 			return true
 		}
 
-		return !m.ignored(client, ctx.Request().Path())
+		return !m.ignored(client, ctx.Request())
 	}
 }
 
@@ -116,7 +131,7 @@ func (m *middleware) Handle(ctx contractshttp.Context) {
 	// An ignored path is not an execution: no marker, no attributes, nothing
 	// counted. If a span was started anyway (the telemetry middleware has no
 	// IgnoreFilter), tell the translator to drop the whole execution.
-	if m.ignored(client, ctx.Request().Path()) {
+	if m.ignored(client, ctx.Request()) {
 		trace.SpanFromContext(ctx.Context()).SetAttributes(attribute.Bool(nightwatch.AttrIgnore, true))
 		ctx.Request().Next()
 

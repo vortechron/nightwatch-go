@@ -3,7 +3,10 @@ package goravel
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"testing"
+
+	"go.opentelemetry.io/otel/trace"
 
 	contractsfoundation "github.com/goravel/framework/contracts/foundation"
 
@@ -68,43 +71,115 @@ func TestMiddleware_IgnoredRequestStillRunsTheHandlers(t *testing.T) {
 	req := mockshttp.NewContextRequest(t)
 	m.EXPECT().Request().Return(req)
 	m.EXPECT().Context().Return(context.Background()).Maybe()
-	req.EXPECT().Path().Return("/build/app.js?v=1")
+	req.EXPECT().Origin().Return(httptest.NewRequestWithContext(context.Background(), "GET", "/build/app.js?v=1", nil))
 	req.EXPECT().Next().Run(func() { ran = true })
 
-	client := enabledClient(func(c *nightwatch.Config) { c.IgnorePaths = []string{"/build/*"} })
+	client := enabledClient(func(c *nightwatch.Config) { c.IgnorePaths = []string{"/build/**"} })
 	Middleware(appWith(t, client, "", nil)).Handle(m)
 	if !ran {
 		t.Fatal("the handler chain must still run")
 	}
 }
 
+// requestFor builds a request the way a client sends it: the target is the raw
+// request line, so %3F, %23 and %2e stay encoded there and are decoded in
+// URL.Path, which is what the router routes on.
+func contextFor(t *testing.T, target string) *mockshttp.Context {
+	t.Helper()
+	ctx := mockshttp.NewContext(t)
+	req := mockshttp.NewContextRequest(t)
+	ctx.EXPECT().Request().Return(req).Maybe()
+	req.EXPECT().Origin().Return(httptest.NewRequestWithContext(context.Background(), "GET", target, nil)).Maybe()
+	req.EXPECT().Path().Return("must not be used while Origin() has a URL").Maybe()
+
+	return ctx
+}
+
 func TestIgnoreFilter_DecidesBeforeAnySpanIsStarted(t *testing.T) {
-	filterFor := func(c *nightwatch.Client, options ...Option) func(string) bool {
-		filter := IgnoreFilter(func() contractsfoundation.Application { return appWith(t, c, "", nil) }, options...)
+	enabled := enabledClient(func(c *nightwatch.Config) { c.IgnorePaths = []string{"/build/**"} })
+	filter := IgnoreFilter(func() contractsfoundation.Application { return appWith(t, enabled, "", nil) }, WithIgnorePaths("/favicon.ico"))
 
-		return func(path string) bool {
-			ctx := mockshttp.NewContext(t)
-			req := mockshttp.NewContextRequest(t)
-			ctx.EXPECT().Request().Return(req).Maybe()
-			req.EXPECT().Path().Return(path).Maybe()
-
-			return filter(ctx)
-		}
-	}
-
-	enabled := enabledClient(func(c *nightwatch.Config) { c.IgnorePaths = []string{"/build/*"} })
-	trace := filterFor(enabled, WithIgnorePaths("/favicon.ico"))
-	for path, want := range map[string]bool{
-		"/build/app.js": false, "/build/app.js?v=2": false, "/favicon.ico": false,
-		"/api/tasks/7": true, "/": true, "/build": true,
+	for target, want := range map[string]bool{
+		"/build/app.js":     false,
+		"/build/app.js?v=2": false, // the query string is not part of the path
+		"/build/a/b/c.css":  false,
+		"/favicon.ico":      false,
+		"/favicon.ico?v=1":  false,
+		"/api/tasks/7":      true,
+		"/":                 true,
+		"/build":            true,
+		"/favicon.ico/":     true,
 	} {
-		if got := trace(path); got != want {
-			t.Errorf("trace(%q) = %v, want %v", path, got, want)
+		if got := filter(contextFor(t, target)); got != want {
+			t.Errorf("trace(%q) = %v, want %v", target, got, want)
 		}
 	}
 
 	// A disabled client has no opinion: telemetry keeps its own behaviour.
-	if !filterFor(nightwatch.New(nightwatch.Config{IgnorePaths: []string{"/build/*"}}))("/build/app.js") {
+	off := IgnoreFilter(func() contractsfoundation.Application {
+		return appWith(t, nightwatch.New(nightwatch.Config{IgnorePaths: []string{"/build/**"}}), "", nil)
+	})
+	if !off(contextFor(t, "/build/app.js")) {
 		t.Fatal("disabled client: the filter must let everything through")
 	}
+}
+
+// The tricks: an encoded ? or # makes the decoded path contain that character,
+// which is part of the path and not a query. Dot segments and doubled slashes
+// are never ignored. The middleware and the filter must agree on all of them.
+func TestIgnore_CraftedPathsAreNotHidden(t *testing.T) {
+	client := enabledClient(func(c *nightwatch.Config) { c.IgnorePaths = []string{"/favicon.ico", "/build/**"} })
+	filter := IgnoreFilter(func() contractsfoundation.Application { return appWith(t, client, "", nil) })
+
+	tests := []struct {
+		target  string
+		ignored bool
+	}{
+		{"/favicon.ico", true},
+		{"/favicon.ico?x=1", true},
+		{"/favicon.ico%3Fanything", false}, // decodes to /favicon.ico?anything
+		{"/favicon.ico%3f", false},
+		{"/favicon.ico%23frag", false}, // decodes to /favicon.ico#frag
+		{"/build/app.js", true},
+		{"/build/%2e%2e/admin", false}, // decodes to /build/../admin
+		{"/build/%2E%2E/admin", false},
+		{"/build/a/../../admin", false},
+		{"/build//x", false},
+		{"//build/x", false},
+		{"/build/./x", false},
+		{"/build/x%3F/../admin", false},
+		{"/build/app%2ejs", true}, // decodes to /build/app.js: a normal asset
+	}
+	for _, tt := range tests {
+		t.Run(tt.target, func(t *testing.T) {
+			if got := !filter(contextFor(t, tt.target)); got != tt.ignored {
+				t.Fatalf("filter ignored=%v, want %v", got, tt.ignored)
+			}
+
+			out := setup(t)
+			span := startRequestSpan(t)
+			m := newHTTPMocks(span.ctx, t, "GET", "", 200, func() {})
+			m.req.EXPECT().Origin().Unset()
+			origin := httptest.NewRequestWithContext(context.Background(), "GET", tt.target, nil)
+			m.req.EXPECT().Origin().Return(origin).Maybe()
+			Middleware(appWith(t, client, "", errors.New("guest"))).Handle(m.ctx)
+			span.span.End()
+
+			if recorded := len(out.ofType("request")) == 1; recorded == tt.ignored {
+				t.Fatalf("middleware: ignored=%v but recorded=%v (the filter said ignored=%v)", tt.ignored, recorded, !filter(contextFor(t, tt.target)))
+			}
+		})
+	}
+}
+
+type requestSpan struct {
+	ctx  context.Context
+	span trace.Span
+}
+
+func startRequestSpan(t *testing.T) requestSpan {
+	t.Helper()
+	ctx, span := rootSpan(context.Background())
+
+	return requestSpan{ctx: ctx, span: span}
 }
