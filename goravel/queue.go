@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/goravel/framework/contracts/queue"
 
 	nightwatch "github.com/vortechron/nightwatch-go"
@@ -19,7 +21,9 @@ type ContextJob interface {
 }
 
 // WrapQueue wraps every job passed to Register so its runs are recorded as
-// job attempts. It is installed globally by the provider.
+// job attempts. The provider installs it. Dispatch cannot be wrapped globally:
+// Goravel's Job(...).Dispatch() carries no context, so it has no request to
+// attach to. Use Queue(ctx, q) where a request is in scope.
 func WrapQueue(inner queue.Queue) queue.Queue {
 	return &queueFacade{Queue: inner, attempts: newAttemptCounter()}
 }
@@ -38,36 +42,58 @@ func (q *queueFacade) Register(jobs []queue.Job) {
 	q.Queue.Register(wrapped)
 }
 
-// Queue returns a queue whose Job(...).Dispatch() records a queued-job in the
-// execution of ctx and sends the trace with the job, so the worker continues
-// the same trace. Goravel's dispatch carries no context, so wrap per request:
+// Queue returns a queue whose Job(...).Dispatch() and Chain(...).Dispatch()
+// record a queued-job in the execution of ctx and send the trace and the user
+// with the job, so the worker continues the same trace. Goravel's dispatch
+// carries no context (Go has no request-global state), so wrap per request:
 //
 //	nwgoravel.Queue(ctx, facades.Queue()).Job(&jobs.Send{}, args).OnQueue("mail").Dispatch()
+//
+// The worker must run the same provider: it strips the trailing envelope
+// argument. A worker without it would pass that string to Handle.
 func Queue(ctx context.Context, inner queue.Queue) queue.Queue {
-	return &dispatchQueue{Queue: inner, ctx: ctx}
+	return &dispatchQueue{Queue: inner, ctx: ctx, syncDrivers: &sync.Map{}}
 }
 
 type dispatchQueue struct {
 	queue.Queue
-	ctx context.Context //nolint:containedctx // bound to one execution on purpose
+	ctx         context.Context //nolint:containedctx // bound to one execution on purpose
+	syncDrivers *sync.Map       // connection name to bool, so the driver is built once
 }
 
 func (q *dispatchQueue) Job(job queue.Job, args ...[]queue.Arg) queue.PendingJob {
-	pending := &pendingJob{queue: q.Queue, ctx: q.ctx, job: job}
+	chainJob := queue.ChainJob{Job: job}
 	if len(args) > 0 {
-		pending.args = append([]queue.Arg(nil), args[0]...)
+		chainJob.Args = args[0]
 	}
 
-	return pending
+	return &pendingJob{dispatch: q, jobs: []queue.ChainJob{chainJob}}
+}
+
+func (q *dispatchQueue) Chain(jobs []queue.ChainJob) queue.PendingJob {
+	return &pendingJob{dispatch: q, jobs: jobs, chain: true}
+}
+
+// isSync tells whether a connection uses the sync driver, where the job runs
+// inline and is not a job attempt of its own.
+func (q *dispatchQueue) isSync(connection string) bool {
+	if cached, ok := q.syncDrivers.Load(connection); ok {
+		return cached.(bool) //nolint:forcetypeassert // only bools are stored
+	}
+
+	driver, err := q.Connection(connection)
+	isSync := err == nil && driver != nil && driver.Driver() == queue.DriverSync
+	q.syncDrivers.Store(connection, isSync)
+
+	return isSync
 }
 
 // pendingJob collects the options and builds the real pending job at Dispatch,
-// when the connection and queue names are final and the envelope can be made.
+// when the connection and queue names are final and the envelopes can be made.
 type pendingJob struct {
-	queue      queue.Queue
-	ctx        context.Context //nolint:containedctx // bound to one execution on purpose
-	job        queue.Job
-	args       []queue.Arg
+	dispatch   *dispatchQueue
+	jobs       []queue.ChainJob
+	chain      bool
 	delay      time.Time
 	connection string
 	queueName  string
@@ -94,20 +120,59 @@ func (p *pendingJob) OnQueue(name string) queue.PendingJob {
 	return &next
 }
 
-func (p *pendingJob) Dispatch() error { return p.send(false) }
+func (p *pendingJob) Dispatch() error {
+	return p.send(false, p.dispatch.isSync(p.connection))
+}
 
-func (p *pendingJob) DispatchSync() error { return p.send(true) }
+func (p *pendingJob) DispatchSync() error { return p.send(true, true) }
 
-func (p *pendingJob) send(sync bool) error {
-	info := nightwatch.JobInfo{Name: p.job.Signature(), Connection: p.connection, Queue: p.queueName}
-	ctx, end := nightwatch.StartJobDispatch(p.ctx, info)
+// send records one queued-job per job and builds the real pending job with an
+// envelope added to each job's arguments.
+func (p *pendingJob) send(forceSync, inline bool) error {
+	jobs := make([]queue.ChainJob, len(p.jobs))
+	ends := make([]nightwatch.EndFunc, len(p.jobs))
 
-	args := append(append([]queue.Arg(nil), p.args...), queue.Arg{
-		Type:  "string",
-		Value: nightwatch.EncodeJobEnvelope(ctx, p.connection, p.queueName),
-	})
+	for i, job := range p.jobs {
+		info := nightwatch.JobInfo{Name: job.Job.Signature(), Connection: p.connection, Queue: p.queueName}
+		ctx, end := nightwatch.StartJobDispatch(p.dispatch.ctx, info)
+		ends[i] = end
 
-	pending := p.queue.Job(p.job, args)
+		job.Args = append(append([]queue.Arg(nil), job.Args...), queue.Arg{
+			Type:  "string",
+			Value: nightwatch.EncodeJobEnvelope(ctx, p.connection, p.queueName, inline),
+		})
+		jobs[i] = job
+	}
+
+	err := p.realPending(jobs).dispatch(forceSync)
+
+	for _, end := range ends {
+		end(err)
+	}
+
+	return err
+}
+
+type dispatcher struct {
+	pending queue.PendingJob
+}
+
+func (d dispatcher) dispatch(sync bool) error {
+	if sync {
+		return d.pending.DispatchSync()
+	}
+
+	return d.pending.Dispatch()
+}
+
+func (p *pendingJob) realPending(jobs []queue.ChainJob) dispatcher {
+	var pending queue.PendingJob
+	if p.chain {
+		pending = p.dispatch.Queue.Chain(jobs)
+	} else {
+		pending = p.dispatch.Queue.Job(jobs[0].Job, jobs[0].Args)
+	}
+
 	if p.connection != "" {
 		pending = pending.OnConnection(p.connection)
 	}
@@ -120,16 +185,7 @@ func (p *pendingJob) send(sync bool) error {
 		pending = pending.Delay(p.delay)
 	}
 
-	var err error
-	if sync {
-		err = pending.DispatchSync()
-	} else {
-		err = pending.Dispatch()
-	}
-
-	end(err)
-
-	return err //nolint:wrapcheck // passthrough of the queue error
+	return dispatcher{pending: pending}
 }
 
 // tracedJob records each run of a job as a job attempt.
@@ -140,6 +196,11 @@ type tracedJob struct {
 
 func (j *tracedJob) Handle(args ...any) (err error) {
 	env, rest := splitEnvelope(args)
+
+	if env.Sync {
+		return j.runInline(env, rest)
+	}
+
 	attempt := j.attempts.next(env.JobID)
 
 	ctx, end := nightwatch.StartJobAttempt(context.Background(), env,
@@ -158,11 +219,24 @@ func (j *tracedJob) Handle(args ...any) (err error) {
 		end(err)
 	}()
 
+	return j.call(ctx, rest)
+}
+
+// runInline runs a job dispatched with the sync driver. It is not a job
+// attempt (Nightwatch records none for the sync connection); its work joins
+// the trace of the dispatching code.
+func (j *tracedJob) runInline(env nightwatch.JobEnvelope, args []any) error {
+	ctx := propagation.TraceContext{}.Extract(context.Background(), propagation.MapCarrier{"traceparent": env.TraceParent})
+
+	return j.call(ctx, args)
+}
+
+func (j *tracedJob) call(ctx context.Context, args []any) error {
 	if withContext, ok := j.Job.(ContextJob); ok {
-		return withContext.HandleContext(ctx, rest...) //nolint:wrapcheck // passthrough of the job error
+		return withContext.HandleContext(ctx, args...) //nolint:wrapcheck // passthrough of the job error
 	}
 
-	return j.Job.Handle(rest...) //nolint:wrapcheck // passthrough of the job error
+	return j.Job.Handle(args...) //nolint:wrapcheck // passthrough of the job error
 }
 
 // wrapJob traces a job. A job with its own retry rule keeps it. A job without
@@ -187,25 +261,31 @@ func (j *tracedRetryJob) ShouldRetry(err error, attempt int) (bool, time.Duratio
 	return j.retry.ShouldRetry(err, attempt)
 }
 
-// splitEnvelope removes the trailing envelope argument added by Queue().
+// splitEnvelope removes the trailing envelope argument added by Queue(). Only
+// the last argument is looked at, and only a string that passes the strict
+// envelope check (tag, W3C traceparent, UUID job id, checksum) is removed.
 func splitEnvelope(args []any) (nightwatch.JobEnvelope, []any) {
 	if len(args) == 0 {
 		return nightwatch.JobEnvelope{}, args
 	}
 
 	last, ok := args[len(args)-1].(string)
-	if !ok || !nightwatch.IsJobEnvelope(last) {
+	if !ok {
 		return nightwatch.JobEnvelope{}, args
 	}
 
-	env, _ := nightwatch.DecodeJobEnvelope(last)
+	env, valid := nightwatch.DecodeJobEnvelope(last)
+	if !valid {
+		return nightwatch.JobEnvelope{}, args
+	}
 
 	return env, args[:len(args)-1]
 }
 
-// attemptCounter numbers the runs of one job id inside this process. Goravel
-// does not pass the attempt number to Handle, so retries on this worker are
-// counted here. The map is bounded.
+// attemptCounter numbers the runs of one job id inside this process.
+// Goravel does not pass the attempt number to Handle (the worker keeps it in a
+// local variable and only gives it to ShouldRetry, after the run), so retries
+// on this worker are counted here. The map is bounded.
 type attemptCounter struct {
 	mu     sync.Mutex
 	counts map[string]int

@@ -6,6 +6,8 @@ import (
 
 	"github.com/goravel/framework/contracts/binding"
 	"github.com/goravel/framework/contracts/foundation"
+
+	nightwatch "github.com/vortechron/nightwatch-go"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -13,43 +15,63 @@ const shutdownTimeout = 10 * time.Second
 // ServiceProvider is the one call that wires Nightwatch into Goravel.
 //
 // List it after the framework providers (cache, queue, schedule, mail, auth,
-// telemetry). Register points telemetry at Nightwatch. Boot starts the sender
-// and wraps the cache, scheduler, console commands and queue job registry.
-type ServiceProvider struct{}
+// telemetry). Register binds the client in the container and points telemetry
+// at Nightwatch. Boot starts the sender and wraps the cache, scheduler,
+// console commands and queue job registry.
+//
+// Register panics with ErrExporterConflict when the app already configured a
+// different telemetry exporter, because failing at boot is clearer than
+// silently sending nothing.
+type ServiceProvider struct {
+	// Config overrides the environment. Nil reads the NIGHTWATCH_* variables.
+	Config *nightwatch.Config
+}
 
-// Register selects the Nightwatch exporters for traces and logs.
-func (ServiceProvider) Register(app foundation.Application) {
-	if !Client().Enabled() {
+// Register binds the client and selects the Nightwatch exporters.
+func (p ServiceProvider) Register(app foundation.Application) {
+	app.Singleton(BindingClient, func(foundation.Application) (any, error) {
+		if p.Config != nil {
+			return nightwatch.New(*p.Config), nil
+		}
+
+		return nightwatch.NewFromEnv(), nil
+	})
+
+	client := ClientFrom(app)
+	if client == nil || !client.Enabled() {
 		return
 	}
 
 	if cfg := app.MakeConfig(); cfg != nil {
-		ConfigureTelemetry(cfg)
+		if err := ConfigureTelemetry(cfg, client); err != nil {
+			panic(err)
+		}
 	}
 }
 
 // Boot starts the client and wraps the framework services.
 func (ServiceProvider) Boot(app foundation.Application) {
-	if !Client().Enabled() {
+	client := ClientFrom(app)
+	if client == nil || !client.Enabled() {
 		return
 	}
 
-	Client().Start()
-	Wrap(app)
+	client.Start()
+	Wrap(app, client)
 }
 
 // Runners returns the shutdown hook that sends what is still buffered. It runs
 // after Goravel's telemetry runner (priority 100), which hands the last spans
 // to the exporters.
-func (ServiceProvider) Runners(foundation.Application) []foundation.Runner {
-	return []foundation.Runner{&shutdownRunner{}}
+func (ServiceProvider) Runners(app foundation.Application) []foundation.Runner {
+	return []foundation.Runner{&shutdownRunner{client: ClientFrom(app)}}
 }
 
-type shutdownRunner struct{}
+type shutdownRunner struct{ client *nightwatch.Client }
 
 func (r *shutdownRunner) Signature() string { return "nightwatch" }
 
-func (r *shutdownRunner) ShouldRun() bool { return Client().Enabled() }
+func (r *shutdownRunner) ShouldRun() bool { return r.client != nil && r.client.Enabled() }
 
 func (r *shutdownRunner) Run() error { return nil }
 
@@ -59,24 +81,27 @@ func (r *shutdownRunner) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	return Client().Shutdown(ctx) //nolint:wrapcheck // plain shutdown error
+	return r.client.Shutdown(ctx) //nolint:wrapcheck // plain shutdown error
 }
 
-// Wrap replaces the cache, schedule, artisan and queue bindings with
+// Wrap replaces the cache, artisan, schedule and queue bindings with
 // instrumented versions. Resolving each binding first makes sure the original
 // exists; Fresh then drops the cached instance so the next facade call gets
-// the wrapper.
-func Wrap(app foundation.Application) {
+// the wrapper. Artisan is wrapped before schedule, which uses it to run
+// scheduled commands.
+func Wrap(app foundation.Application, client *nightwatch.Client) {
 	if cache := app.MakeCache(); cache != nil {
 		app.Instance(binding.Cache, WrapCache(cache))
 	}
 
-	if schedule := app.MakeSchedule(); schedule != nil {
-		app.Instance(binding.Schedule, WrapSchedule(schedule))
+	artisan := app.MakeArtisan()
+	if artisan != nil {
+		artisan = WrapArtisan(artisan, flusher(client))
+		app.Instance(binding.Artisan, artisan)
 	}
 
-	if artisan := app.MakeArtisan(); artisan != nil {
-		app.Instance(binding.Artisan, WrapArtisan(artisan))
+	if schedule := app.MakeSchedule(); schedule != nil {
+		app.Instance(binding.Schedule, WrapSchedule(schedule, artisan))
 	}
 
 	if queue := app.MakeQueue(); queue != nil {

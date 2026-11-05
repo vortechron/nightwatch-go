@@ -7,6 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/google/uuid v1.6.0
 	github.com/goravel/framework v1.18.0
+	github.com/spf13/cast v1.10.0
 	github.com/stretchr/testify v1.11.1
 	github.com/zeebo/xxh3 v1.1.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0

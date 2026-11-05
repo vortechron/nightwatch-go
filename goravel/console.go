@@ -7,15 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/log/global"
-
 	"github.com/goravel/framework/contracts/console"
 
 	nightwatch "github.com/vortechron/nightwatch-go"
 )
-
-func contextBackground() context.Context { return context.Background() }
 
 func panicError(recovered any) error {
 	if err, ok := recovered.(error); ok {
@@ -26,23 +21,30 @@ func panicError(recovered any) error {
 }
 
 // WrapArtisan records every run of a registered command as a command
-// execution with its exit code.
-func WrapArtisan(inner console.Artisan) console.Artisan {
-	return &artisanFacade{Artisan: inner}
+// execution with its exit code. flush is called when a command ends, because a
+// command is short lived and the process may exit right after it.
+func WrapArtisan(inner console.Artisan, flush func(context.Context)) console.Artisan {
+	return &artisanFacade{Artisan: inner, flush: flush}
 }
 
-type artisanFacade struct{ console.Artisan }
+type artisanFacade struct {
+	console.Artisan
+	flush func(context.Context)
+}
 
 func (a *artisanFacade) Register(commands []console.Command) {
 	wrapped := make([]console.Command, len(commands))
 	for i, command := range commands {
-		wrapped[i] = &tracedCommand{Command: command}
+		wrapped[i] = &tracedCommand{Command: command, flush: a.flush}
 	}
 
 	a.Artisan.Register(wrapped)
 }
 
-type tracedCommand struct{ console.Command }
+type tracedCommand struct {
+	console.Command
+	flush func(context.Context)
+}
 
 func (c *tracedCommand) Handle(ctx console.Context) (err error) {
 	info := nightwatch.CommandInfo{
@@ -57,12 +59,12 @@ func (c *tracedCommand) Handle(ctx console.Context) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			end(1, panicError(recovered))
-			flushNow()
+			c.flushNow()
 			panic(recovered)
 		}
 
 		end(exitCode(err), err)
-		flushNow()
+		c.flushNow()
 	}()
 
 	return c.Command.Handle(ctx)
@@ -92,24 +94,17 @@ func (c *tracedConsoleContext) Err() error { return c.traced.Err() }
 
 func (c *tracedConsoleContext) Value(key any) any { return c.traced.Value(key) }
 
-// flushNow sends what is buffered. A command is short lived and the process
-// may exit right after it, so waiting for the timer would lose its records.
-func flushNow() {
+// flushNow sends what is buffered; waiting for the timer would lose the
+// records of a command whose process exits right away.
+func (c *tracedCommand) flushNow() {
+	if c.flush == nil {
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
 	defer cancel()
 
-	// OpenTelemetry batches spans and logs for seconds; push them out first.
-	type flusher interface{ ForceFlush(context.Context) error }
-
-	if provider, ok := otel.GetTracerProvider().(flusher); ok {
-		_ = provider.ForceFlush(ctx)
-	}
-
-	if provider, ok := global.GetLoggerProvider().(flusher); ok {
-		_ = provider.ForceFlush(ctx)
-	}
-
-	Client().Flush(ctx)
+	c.flush(ctx)
 }
 
 const flushTimeout = 5 * time.Second

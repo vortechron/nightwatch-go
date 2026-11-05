@@ -1,15 +1,15 @@
 package nightwatch
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"strings"
-
-	"context"
-	"errors"
-	"github.com/google/uuid"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"

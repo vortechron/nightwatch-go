@@ -1,8 +1,11 @@
 package goravel
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -12,6 +15,9 @@ import (
 
 	nightwatch "github.com/vortechron/nightwatch-go"
 )
+
+// maxPayloadBytes is how much of a request body is read for payload capture.
+const maxPayloadBytes = 64 * 1024
 
 // UserResolver turns the signed-in user id into a full User (name, username).
 // Return false to keep just the id.
@@ -27,23 +33,23 @@ func WithUserResolver(resolve UserResolver) Option {
 
 type middleware struct {
 	app     func() contractsfoundation.Application
-	redact  []string
 	resolve UserResolver
 }
 
 // Middleware enriches the span that Goravel's telemetry middleware opened
 // with what Nightwatch needs and OpenTelemetry's HTTP convention leaves out:
-// the path and query, redacted headers, body sizes, the signed-in user and
-// panics with a stack trace. Register it after the telemetry middleware.
+// the path and query, redacted headers, body sizes, the signed-in user, the
+// redacted body of failed requests (only with NIGHTWATCH_CAPTURE_REQUEST_PAYLOAD)
+// and panics with a stack trace. Register it after the telemetry middleware.
 func Middleware(app contractsfoundation.Application, options ...Option) contractshttp.Middleware {
 	return LazyMiddleware(func() contractsfoundation.Application { return app }, options...)
 }
 
 // LazyMiddleware is Middleware for use in WithMiddleware, which runs before
-// the application exists. getApp is called when a request needs the user, for
-// example `nwgoravel.LazyMiddleware(facades.App)`.
+// the application exists. getApp is called per request, for example
+// `nwgoravel.LazyMiddleware(facades.App)`.
 func LazyMiddleware(getApp func() contractsfoundation.Application, options ...Option) contractshttp.Middleware {
-	m := &middleware{app: getApp, redact: Client().Config().RedactHeaders}
+	m := &middleware{app: getApp}
 	for _, option := range options {
 		option(m)
 	}
@@ -53,11 +59,32 @@ func LazyMiddleware(getApp func() contractsfoundation.Application, options ...Op
 
 func (m *middleware) Signature() string { return "nightwatch" }
 
+func (m *middleware) client() *nightwatch.Client {
+	if app := m.app(); app != nil {
+		return ClientFrom(app)
+	}
+
+	return nil
+}
+
 func (m *middleware) Handle(ctx contractshttp.Context) {
+	client := m.client()
+	if client == nil || !client.Enabled() {
+		ctx.Request().Next()
+
+		return
+	}
+
+	cfg := client.Config()
 	span := trace.SpanFromContext(ctx.Context())
 	req := ctx.Request()
 
-	span.SetAttributes(requestAttributes(req, m.redact)...)
+	span.SetAttributes(requestAttributes(req, cfg.RedactHeaders)...)
+	body := captureBody(req, cfg)
+
+	// Sign-in usually happens in an earlier middleware: carry the user into the
+	// context so jobs dispatched by the handler report the same user.
+	m.identify(ctx)
 
 	defer func() {
 		recovered := recover()
@@ -65,7 +92,7 @@ func (m *middleware) Handle(ctx contractshttp.Context) {
 			nightwatch.RecordExceptionOnSpan(span, fmt.Errorf("panic: %v", recovered), false)
 		}
 
-		m.finish(ctx, span)
+		m.finish(ctx, span, cfg, body)
 
 		if recovered != nil {
 			panic(recovered)
@@ -101,24 +128,66 @@ func originAttributes(origin *http.Request) []attribute.KeyValue {
 	return attrs
 }
 
+// captureBody reads a JSON request body (at most 64 KB) when payload capture
+// is on, and puts it back so the handlers still see it. It returns the body
+// already redacted, so a secret never reaches a span attribute; "" when off.
+func captureBody(req contractshttp.ContextRequest, cfg nightwatch.Config) string {
+	origin := req.Origin()
+	if !cfg.CaptureRequestPayload || origin == nil || origin.Body == nil ||
+		!strings.Contains(origin.Header.Get("Content-Type"), "json") {
+		return ""
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(origin.Body, maxPayloadBytes+1))
+	rest := origin.Body
+	origin.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(raw), rest), rest}
+
+	if err != nil || len(raw) > maxPayloadBytes {
+		return ""
+	}
+
+	return nightwatch.RedactPayloadJSON(string(raw), cfg.RedactPayloadFields)
+}
+
+// identify stores the signed-in user in the request context and span.
+func (m *middleware) identify(ctx contractshttp.Context) {
+	id, ok := m.userID(ctx)
+	if !ok {
+		return
+	}
+
+	user := nightwatch.User{ID: id}
+	if m.resolve != nil {
+		if resolved, found := m.resolve(ctx, id); found {
+			user = resolved
+		}
+	}
+
+	ctx.WithContext(nightwatch.SetUser(ctx.Context(), user))
+}
+
 // finish adds what is only known once the handlers have run.
-func (m *middleware) finish(ctx contractshttp.Context, span trace.Span) {
+func (m *middleware) finish(ctx contractshttp.Context, span trace.Span, cfg nightwatch.Config, body string) {
+	status := 0
+
 	if origin := ctx.Response().Origin(); origin != nil {
+		status = origin.Status()
 		span.SetAttributes(
 			attribute.Int("http.response.body.size", origin.Size()),
-			attribute.Int("http.response.status_code", origin.Status()),
+			attribute.Int("http.response.status_code", status),
 		)
 	}
 
-	if id, ok := m.userID(ctx); ok {
-		user := nightwatch.User{ID: id}
-		if m.resolve != nil {
-			if resolved, found := m.resolve(ctx, id); found {
-				user = resolved
-			}
-		}
+	if cfg.CaptureRequestPayload && body != "" && status == http.StatusInternalServerError {
+		span.SetAttributes(attribute.String(nightwatch.AttrPayload, body))
+	}
 
-		nightwatch.SetUser(ctx.Context(), user)
+	// The user may have signed in during the request.
+	if nightwatch.UserFromContext(ctx.Context()) == "" {
+		m.identify(ctx)
 	}
 }
 

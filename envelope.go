@@ -75,24 +75,31 @@ func DecodeJobEnvelope(value string) (JobEnvelope, bool) {
 		return JobEnvelope{}, false
 	}
 
-	if !traceparentPattern.MatchString(parts[1]) || len(parts[2]) != 36 {
+	return parseEnvelopeFields(parts)
+}
+
+func parseEnvelopeFields(parts []string) (JobEnvelope, bool) {
+	if !traceparentPattern.MatchString(parts[1]) || len(parts[2]) != 36 || (parts[6] != "0" && parts[6] != "1") {
 		return JobEnvelope{}, false
 	}
 
-	if _, err := uuid.Parse(parts[2]); err != nil || (parts[6] != "0" && parts[6] != "1") {
+	if _, err := uuid.Parse(parts[2]); err != nil {
 		return JobEnvelope{}, false
 	}
 
-	connection, errA := url.QueryUnescape(parts[3])
-	queue, errB := url.QueryUnescape(parts[4])
-	user, errC := url.QueryUnescape(parts[5])
+	texts := make([]string, 3)
 
-	if errA != nil || errB != nil || errC != nil {
-		return JobEnvelope{}, false
+	for i := range texts {
+		text, err := url.QueryUnescape(parts[3+i])
+		if err != nil {
+			return JobEnvelope{}, false
+		}
+
+		texts[i] = text
 	}
 
 	return JobEnvelope{
-		TraceParent: parts[1], JobID: parts[2], Connection: connection, Queue: queue, User: user, Sync: parts[6] == "1",
+		TraceParent: parts[1], JobID: parts[2], Connection: texts[0], Queue: texts[1], User: texts[2], Sync: parts[6] == "1",
 	}, true
 }
 

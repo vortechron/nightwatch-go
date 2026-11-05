@@ -13,14 +13,25 @@ import (
 // in ctx. Goravel's mail API carries no context, so wrap per request:
 //
 //	nwgoravel.Mail(ctx, facades.Mail()).To([]string{"a@b.c"}).Send(m)
-func Mail(ctx context.Context, inner mail.Mail) mail.Mail {
-	return &tracedMail{inner: inner, ctx: ctx}
+//
+// The mailer name shown in Omni is "smtp", the only transport Goravel's mailer
+// has (its mail config has no mailer name). Pass a name to override it.
+func Mail(ctx context.Context, inner mail.Mail, mailer ...string) mail.Mail {
+	name := defaultMailer
+	if len(mailer) > 0 && mailer[0] != "" {
+		name = mailer[0]
+	}
+
+	return &tracedMail{inner: inner, ctx: ctx, mailer: name}
 }
+
+const defaultMailer = "smtp"
 
 // tracedMail is a value-like builder: every method returns a copy, so a
 // wrapper can be reused without recipients leaking between mails.
 type tracedMail struct {
 	inner       mail.Mail
+	mailer      string
 	ctx         context.Context //nolint:containedctx // bound to one execution on purpose
 	to, cc, bcc int
 	attachments int
@@ -86,7 +97,7 @@ func (m *tracedMail) Queue(mailables ...mail.Mailable) error {
 // info describes the mail. A Mailable adds its own recipients and subject.
 func (m *tracedMail) info(mailables []mail.Mailable) nightwatch.MailInfo {
 	info := nightwatch.MailInfo{
-		Class: "mail", Subject: m.subject,
+		Mailer: m.mailer, Class: "mail", Subject: m.subject,
 		To: m.to, Cc: m.cc, Bcc: m.bcc, Attachments: m.attachments,
 	}
 
