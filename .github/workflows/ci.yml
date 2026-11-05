@@ -34,7 +34,7 @@ jobs:
         run: sh scripts/coverage-gate.sh 80 coverage.out
 
       - name: Vulnerability check
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+        run: bash scripts/vulncheck.sh
 
       - name: Build
         run: go build ./...

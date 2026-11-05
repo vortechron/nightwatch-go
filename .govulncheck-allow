@@ -1,0 +1,6 @@
+# One vulnerability ID per line, then the reason after a space.
+# An ID here is a known issue we cannot fix yet. Remove the line when it is fixed.
+# Goravel v1.18.0 compiles only against OpenTelemetry log v0.20; the fix is in v0.21 (API change).
+# The busy-spin needs a full BatchProcessor export queue. Our log exporter only hands records
+# to the translator and returns at once, so the queue does not fill. Re-check on the next Goravel release.
+GO-2026-6615 otel sdk/log BatchProcessor busy-spin, our exporter never blocks
