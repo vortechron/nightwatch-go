@@ -186,12 +186,12 @@ func TestSampledBy(t *testing.T) {
 	}
 }
 
-func TestTranslator_DedupesRepeatedException(t *testing.T) {
+func TestTranslator_FrameworkEchoOfARecordedErrorIsNotCountedTwice(t *testing.T) {
 	h := newHarness(t, nil)
 	h.request(context.Background(), 500, func(_ context.Context, span trace.Span) {
 		span.AddEvent("exception", trace.WithAttributes(attribute.String("exception.type", "*errors.errorString"), attribute.String("exception.message", "panic: boom")))
 		span.AddEvent("exception", trace.WithAttributes(attribute.String("exception.type", "panic"), attribute.String("exception.message", "boom"),
-			attribute.String("exception.stacktrace", sampleStack)))
+			attribute.String("exception.stacktrace", sampleStack), attribute.Bool(AttrExceptionReported, true)))
 	})
 	excs := h.sink.ofType("exception")
 	if len(excs) != 1 {

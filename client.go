@@ -22,14 +22,21 @@ type Client struct {
 	stopOnce sync.Once
 }
 
-// Stats reports the health of the sender.
+// Stats reports what the client holds and what it had to drop.
 type Stats struct {
+	// Pending records wait in the sender. Dropped records were lost to a full
+	// buffer, a quota pause, a rejected batch, retries that ran out, or a
+	// shutdown.
 	Pending int
 	Dropped int64
+	// Translator holds the bounded-memory counters (evicted traces, dropped
+	// spans, late children).
+	Translator TranslatorStats
 }
 
 // New builds a client. Nothing runs until Start is called.
 func New(cfg Config) *Client {
+	cfg = cfg.withDefaults()
 	sender := NewSender(cfg)
 
 	return &Client{
@@ -68,7 +75,12 @@ func (c *Client) Start() {
 func (c *Client) sweep() {
 	defer c.wg.Done()
 
-	interval := max(c.cfg.TraceMaxWait/4, 50*time.Millisecond)
+	interval := c.cfg.TraceMaxWait / 4
+	if c.cfg.RootGrace > 0 {
+		interval = min(interval, c.cfg.RootGrace/2)
+	}
+
+	interval = max(interval, 20*time.Millisecond)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -93,7 +105,7 @@ func (c *Client) Translator() *Translator { return c.translator }
 
 // Stats returns the sender counters.
 func (c *Client) Stats() Stats {
-	return Stats{Pending: c.sender.Pending(), Dropped: c.sender.Dropped()}
+	return Stats{Pending: c.sender.Pending(), Dropped: c.sender.Dropped(), Translator: c.translator.Stats()}
 }
 
 // Flush moves everything the translator still holds to the sender and sends

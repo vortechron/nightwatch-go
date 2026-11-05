@@ -49,9 +49,10 @@ const (
 	AttrUserName     = "nightwatch.user.name"
 	AttrUserUsername = "nightwatch.user.username"
 
-	AttrExceptionClass   = "nightwatch.exception.class"
-	AttrExceptionHandled = "nightwatch.exception.handled"
-	AttrExceptionCode    = "nightwatch.exception.code"
+	AttrExceptionClass    = "nightwatch.exception.class"
+	AttrExceptionHandled  = "nightwatch.exception.handled"
+	AttrExceptionCode     = "nightwatch.exception.code"
+	AttrExceptionReported = "nightwatch.exception.reported"
 
 	AttrJobID         = "nightwatch.job.id"
 	AttrJobName       = "nightwatch.job.name"

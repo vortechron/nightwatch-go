@@ -52,7 +52,11 @@ type Config struct {
 	// CaptureRequestPayload keeps the body of failed (500) requests. Off by
 	// default, like the PHP package. RedactPayloadFields are blanked first.
 	CaptureRequestPayload bool
-	RedactPayloadFields   []string
+	// CaptureExceptionSourceCode adds the lines around each frame (five on
+	// each side, for the first ten application frames) when the file can be
+	// read. On by default, like the PHP package.
+	CaptureExceptionSourceCode bool
+	RedactPayloadFields        []string
 
 	// BatchSize and FlushInterval trigger a send. MaxBuffered bounds memory:
 	// past it the oldest records are dropped and counted.
@@ -96,15 +100,16 @@ func ConfigFromEnv(getenv func(string) string, hostname string) Config {
 		ExceptionSampleRate:     rate(getenv("NIGHTWATCH_EXCEPTION_SAMPLE_RATE")),
 		ScheduledTaskSampleRate: rate(getenv("NIGHTWATCH_SCHEDULED_TASK_SAMPLE_RATE")),
 
-		IgnoreCacheEvents:      truthy(getenv("NIGHTWATCH_IGNORE_CACHE_EVENTS")),
-		IgnoreMail:             truthy(getenv("NIGHTWATCH_IGNORE_MAIL")),
-		IgnoreNotifications:    truthy(getenv("NIGHTWATCH_IGNORE_NOTIFICATIONS")),
-		IgnoreOutgoingRequests: truthy(getenv("NIGHTWATCH_IGNORE_OUTGOING_REQUESTS")),
-		IgnoreQueries:          truthy(getenv("NIGHTWATCH_IGNORE_QUERIES")),
-		LogLevel:               strings.ToLower(firstNonEmpty(getenv("NIGHTWATCH_LOG_LEVEL"), getenv("LOG_LEVEL"), "debug")),
-		RedactHeaders:          mergeRedactNames(splitList(getenv("NIGHTWATCH_REDACT_HEADERS"), nil)),
-		CaptureRequestPayload:  truthy(getenv("NIGHTWATCH_CAPTURE_REQUEST_PAYLOAD")),
-		RedactPayloadFields:    splitList(getenv("NIGHTWATCH_REDACT_PAYLOAD_FIELDS"), defaultRedactPayloadFields),
+		IgnoreCacheEvents:          truthy(getenv("NIGHTWATCH_IGNORE_CACHE_EVENTS")),
+		IgnoreMail:                 truthy(getenv("NIGHTWATCH_IGNORE_MAIL")),
+		IgnoreNotifications:        truthy(getenv("NIGHTWATCH_IGNORE_NOTIFICATIONS")),
+		IgnoreOutgoingRequests:     truthy(getenv("NIGHTWATCH_IGNORE_OUTGOING_REQUESTS")),
+		IgnoreQueries:              truthy(getenv("NIGHTWATCH_IGNORE_QUERIES")),
+		LogLevel:                   strings.ToLower(firstNonEmpty(getenv("NIGHTWATCH_LOG_LEVEL"), getenv("LOG_LEVEL"), "debug")),
+		RedactHeaders:              mergeRedactNames(splitList(getenv("NIGHTWATCH_REDACT_HEADERS"), nil)),
+		CaptureRequestPayload:      truthy(getenv("NIGHTWATCH_CAPTURE_REQUEST_PAYLOAD")),
+		CaptureExceptionSourceCode: enabledByDefault(getenv("NIGHTWATCH_CAPTURE_EXCEPTION_SOURCE_CODE")),
+		RedactPayloadFields:        splitList(getenv("NIGHTWATCH_REDACT_PAYLOAD_FIELDS"), defaultRedactPayloadFields),
 
 		BatchSize:     defaultBatchSize,
 		FlushInterval: defaultFlushInterval,
@@ -158,6 +163,11 @@ func truthy(value string) bool {
 	default:
 		return false
 	}
+}
+
+// enabledByDefault is true unless the variable is set to a false value.
+func enabledByDefault(value string) bool {
+	return strings.TrimSpace(value) == "" || truthy(value)
 }
 
 func rate(value string) float64 {

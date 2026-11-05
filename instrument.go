@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"strings"
 	"time"
 
@@ -56,8 +55,9 @@ func RecordExceptionOnSpan(span trace.Span, err error, handled bool) {
 	span.AddEvent(eventException, trace.WithAttributes(
 		attribute.String(attrExceptionType, exceptionClass(err)),
 		attribute.String(attrExceptionMsg, err.Error()),
-		attribute.String(attrExceptionStack, string(debug.Stack())),
+		attribute.String(attrExceptionStack, CaptureStack(0)),
 		attribute.Bool(AttrExceptionHandled, handled),
+		attribute.Bool(AttrExceptionReported, true),
 	))
 }
 

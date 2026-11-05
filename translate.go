@@ -4,6 +4,7 @@ import (
 	"math/rand/v2"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -18,20 +19,47 @@ type Sink interface {
 	Enqueue(records []Record)
 }
 
+// TranslatorStats counts what the translator had to drop to stay bounded.
+type TranslatorStats struct {
+	// TracesEvicted are traces sent early as orphans because too many were held.
+	TracesEvicted int64
+	// SpansDropped are spans (or logs) refused because their trace was full.
+	SpansDropped int64
+	// OwnersEvicted are finished-span entries forgotten because of the cap.
+	OwnersEvicted int64
+	// LateChildren arrived after their execution was already sent, so the
+	// counters on that execution record miss them.
+	LateChildren int64
+}
+
 // Translator turns OpenTelemetry spans and log records into Nightwatch
 // records. It holds a trace's spans until the execution root span (request,
 // job attempt, command or scheduled task) ends, so the execution record can
-// carry correct counters and every child can name its execution.
+// carry correct counters and every child can name its execution. A finished
+// root waits RootGrace more, so logs and spans that end just after it count.
+//
+// All state is bounded: MaxTraces traces, MaxSpansPerTrace spans per trace and
+// MaxOwners finished-span entries. Records are built and sent outside the lock.
 type Translator struct {
 	cfg  Config
 	sink Sink
 	now  func() time.Time
 	rand func() float64
+	mem  memSampler
 
-	mu     sync.Mutex
-	traces map[trace.TraceID]*traceBuf
-	owners map[trace.SpanID]ownerRef
-	users  map[string]struct{}
+	mu      sync.Mutex
+	traces  map[trace.TraceID]*traceBuf
+	order   []trace.TraceID
+	owners  map[trace.SpanID]ownerRef
+	pending map[trace.SpanID]*pendingExec
+
+	usersMu sync.Mutex
+	users   map[string]struct{}
+
+	tracesEvicted atomic.Int64
+	spansDropped  atomic.Int64
+	ownersEvicted atomic.Int64
+	lateChildren  atomic.Int64
 }
 
 type traceBuf struct {
@@ -40,95 +68,166 @@ type traceBuf struct {
 	since time.Time
 }
 
-// ownerRef remembers which execution an already-emitted span belonged to, so
+// ownerRef remembers which execution an already-finished span belonged to, so
 // late arrivals still link correctly.
 type ownerRef struct {
 	info    execInfo
 	expires time.Time
 }
 
+// pendingExec is a finished execution waiting out its grace period.
+type pendingExec struct {
+	root    sdktrace.ReadOnlySpan
+	info    execInfo
+	members []sdktrace.ReadOnlySpan
+	logs    []sdklog.Record
+	due     time.Time
+}
+
 // NewTranslator creates a translator that writes finished records to sink.
 func NewTranslator(cfg Config, sink Sink) *Translator {
 	return &Translator{
-		cfg:    cfg,
-		sink:   sink,
-		now:    time.Now,
-		rand:   rand.Float64,
-		traces: map[trace.TraceID]*traceBuf{},
-		owners: map[trace.SpanID]ownerRef{},
-		users:  map[string]struct{}{},
+		cfg:     cfg.withDefaults(),
+		sink:    sink,
+		now:     time.Now,
+		rand:    rand.Float64,
+		traces:  map[trace.TraceID]*traceBuf{},
+		owners:  map[trace.SpanID]ownerRef{},
+		pending: map[trace.SpanID]*pendingExec{},
+		users:   map[string]struct{}{},
+	}
+}
+
+// Stats returns the drop counters.
+func (t *Translator) Stats() TranslatorStats {
+	return TranslatorStats{
+		TracesEvicted: t.tracesEvicted.Load(),
+		SpansDropped:  t.spansDropped.Load(),
+		OwnersEvicted: t.ownersEvicted.Load(),
+		LateChildren:  t.lateChildren.Load(),
 	}
 }
 
 // AddSpans accepts ended spans.
 func (t *Translator) AddSpans(spans []sdktrace.ReadOnlySpan) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	var items []work
 
+	t.mu.Lock()
 	for _, span := range spans {
-		t.addSpan(span)
+		items = append(items, t.addSpan(span)...)
 	}
+	t.mu.Unlock()
+
+	t.run(items)
 }
 
 // AddLogs accepts log records.
 func (t *Translator) AddLogs(records []sdklog.Record) {
+	var items []work
+
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	for _, entry := range records {
-		t.addLog(entry.Clone())
+		items = append(items, t.addLog(entry.Clone())...)
 	}
+	t.mu.Unlock()
+
+	t.run(items)
 }
 
-func (t *Translator) buffer(id trace.TraceID) *traceBuf {
-	buf, ok := t.traces[id]
-	if !ok {
-		buf = &traceBuf{spans: map[trace.SpanID]sdktrace.ReadOnlySpan{}, since: t.now()}
-		t.traces[id] = buf
-	}
-
-	return buf
-}
-
-func (t *Translator) addSpan(span sdktrace.ReadOnlySpan) {
+func (t *Translator) addSpan(span sdktrace.ReadOnlySpan) []work {
 	sc := span.SpanContext()
-	buf := t.buffer(sc.TraceID())
+	kind := execKind(span)
+
+	if kind == "" {
+		if owner, late := t.lateOwner(t.traces[sc.TraceID()], span.Parent().SpanID()); late {
+			return t.lateSpan(sc.TraceID(), span, owner)
+		}
+	}
+
+	buf, evicted := t.buffer(sc.TraceID())
+
+	if kind == "" && len(buf.spans) >= t.cfg.MaxSpansPerTrace {
+		t.spansDropped.Add(1)
+
+		return evicted
+	}
+
 	buf.spans[sc.SpanID()] = span
 
-	if kind := execKind(span); kind != "" {
-		t.flushExecution(sc.TraceID(), buf, span, kind)
-
-		return
+	if kind == "" {
+		return evicted
 	}
 
-	if owner, late := t.lateOwner(buf, sc.SpanID()); late {
-		t.emitLate(buf, span, owner)
-	}
+	return append(evicted, t.finishRoot(sc.TraceID(), buf, span, kind)...)
 }
 
-func (t *Translator) addLog(entry sdklog.Record) {
+func (t *Translator) addLog(entry sdklog.Record) []work {
 	if !entry.TraceID().IsValid() {
-		t.emitStandaloneLog(entry)
-
-		return
+		return []work{{kind: workStandaloneLog, logs: []sdklog.Record{entry}}}
 	}
 
-	buf := t.buffer(entry.TraceID())
-	if owner, late := t.lateOwner(buf, entry.SpanID()); late {
-		t.sink.Enqueue(t.logRecords([]sdklog.Record{entry}, owner.info))
+	if owner, late := t.lateOwner(t.traces[entry.TraceID()], entry.SpanID()); late {
+		return t.lateLog(entry, owner)
+	}
 
-		return
+	buf, evicted := t.buffer(entry.TraceID())
+	if len(buf.logs) >= t.cfg.MaxSpansPerTrace {
+		t.spansDropped.Add(1)
+
+		return evicted
 	}
 
 	buf.logs = append(buf.logs, entry)
+
+	return evicted
 }
 
-// resolve walks up from a span to the execution root that owns it. found is
-// false when the chain leaves what the translator knows about.
+// buffer returns the buffer of a trace, creating it. When MaxTraces would be
+// exceeded the oldest trace is taken out and returned as orphan work.
+func (t *Translator) buffer(id trace.TraceID) (*traceBuf, []work) {
+	if buf, ok := t.traces[id]; ok {
+		return buf, nil
+	}
+
+	var evicted []work
+
+	for len(t.traces) >= t.cfg.MaxTraces && len(t.order) > 0 {
+		oldest := t.order[0]
+		t.order = t.order[1:]
+
+		if old, ok := t.traces[oldest]; ok {
+			delete(t.traces, oldest)
+			t.tracesEvicted.Add(1)
+			evicted = append(evicted, t.orphanWork(oldest, old))
+		}
+	}
+
+	buf := &traceBuf{spans: map[trace.SpanID]sdktrace.ReadOnlySpan{}, since: t.now()}
+	t.traces[id] = buf
+	t.order = append(t.order, id)
+
+	return buf, evicted
+}
+
+func (t *Translator) orphanWork(id trace.TraceID, buf *traceBuf) work {
+	spans := make([]sdktrace.ReadOnlySpan, 0, len(buf.spans))
+	for _, span := range buf.spans {
+		spans = append(spans, span)
+	}
+
+	return work{kind: workOrphans, traceID: id, spans: spans, logs: buf.logs}
+}
+
+// resolve walks up from a span to the execution root that owns it. buf may be
+// nil. found is false when the chain leaves what the translator knows.
 func (t *Translator) resolve(buf *traceBuf, id trace.SpanID) (ownerRef, trace.SpanID, bool) {
 	for range maxAncestorDepth {
 		if owner, ok := t.owners[id]; ok {
 			return owner, owner.info.root, true
+		}
+
+		if buf == nil {
+			return ownerRef{}, trace.SpanID{}, false
 		}
 
 		span, ok := buf.spans[id]
@@ -147,35 +246,66 @@ func (t *Translator) resolve(buf *traceBuf, id trace.SpanID) (ownerRef, trace.Sp
 }
 
 // lateOwner reports the owner of a span whose execution already ended.
-func (t *Translator) lateOwner(buf *traceBuf, id trace.SpanID) (ownerRef, bool) {
-	owner, _, found := t.resolve(buf, id)
+func (t *Translator) lateOwner(buf *traceBuf, parent trace.SpanID) (ownerRef, bool) {
+	owner, _, found := t.resolve(buf, parent)
 
 	return owner, found && owner.info.root.IsValid()
 }
 
-func (t *Translator) flushExecution(traceID trace.TraceID, buf *traceBuf, root sdktrace.ReadOnlySpan, kind string) {
+func (t *Translator) finishRoot(traceID trace.TraceID, buf *traceBuf, root sdktrace.ReadOnlySpan, kind string) []work {
 	rootID := root.SpanContext().SpanID()
 	members, logs := t.collect(buf, rootID)
 
-	user := firstUser(members)
-	info := newExecInfo(root, kind, user)
+	info := newExecInfo(root, kind, firstUser(members))
 	info.sampled = t.keep(traceID, root, kind, members)
 
-	expires := t.now().Add(2 * t.cfg.TraceMaxWait)
+	expires := t.now().Add(2*t.cfg.TraceMaxWait + t.cfg.RootGrace)
 	for _, member := range members {
-		t.owners[member.SpanContext().SpanID()] = ownerRef{info: info, expires: expires}
+		id := member.SpanContext().SpanID()
+		t.owners[id] = ownerRef{info: info, expires: expires}
+		delete(buf.spans, id)
 	}
 
-	for _, member := range members {
-		delete(buf.spans, member.SpanContext().SpanID())
+	t.trimOwners()
+	t.dropIfEmpty(traceID, buf)
+
+	exec := &pendingExec{root: root, info: info, members: members, logs: logs, due: t.now().Add(t.cfg.RootGrace)}
+	if t.cfg.RootGrace <= 0 {
+		return []work{{kind: workExec, exec: exec}}
 	}
 
+	t.pending[rootID] = exec
+
+	return nil
+}
+
+func (t *Translator) dropIfEmpty(id trace.TraceID, buf *traceBuf) {
 	if len(buf.spans) == 0 && len(buf.logs) == 0 {
-		delete(t.traces, traceID)
+		delete(t.traces, id)
+	}
+}
+
+// trimOwners keeps the owner map under MaxOwners: expired entries go first,
+// then arbitrary ones.
+func (t *Translator) trimOwners() {
+	if len(t.owners) <= t.cfg.MaxOwners {
+		return
 	}
 
-	if info.sampled {
-		t.sink.Enqueue(t.assemble(root, info, members, logs))
+	now := t.now()
+	for id, owner := range t.owners {
+		if now.After(owner.expires) {
+			delete(t.owners, id)
+		}
+	}
+
+	for id := range t.owners {
+		if len(t.owners) <= t.cfg.MaxOwners {
+			return
+		}
+
+		delete(t.owners, id)
+		t.ownersEvicted.Add(1)
 	}
 }
 
@@ -213,6 +343,10 @@ func (t *Translator) keep(traceID trace.TraceID, root sdktrace.ReadOnlySpan, kin
 		return true
 	}
 
+	return t.rerollForException(members)
+}
+
+func (t *Translator) rerollForException(members []sdktrace.ReadOnlySpan) bool {
 	for _, found := range collectExceptions(members) {
 		if !found.handled && t.rand() <= t.cfg.ExceptionSampleRate {
 			return true
@@ -222,136 +356,71 @@ func (t *Translator) keep(traceID trace.TraceID, root sdktrace.ReadOnlySpan, kin
 	return false
 }
 
-// assemble builds the execution record and every child record.
-func (t *Translator) assemble(root sdktrace.ReadOnlySpan, x execInfo, members []sdktrace.ReadOnlySpan, logs []sdklog.Record) []Record {
-	children, tally := t.children(root, x, members, logs)
-
-	preview := ""
-	for _, record := range children {
-		if record.Type() == RecordException && record["handled"] == false {
-			preview, _ = record["message"].(string)
-		}
-	}
-
-	records := make([]Record, 0, len(children)+2)
-	records = append(records, sanitize(t.buildExecution(root, x, tally, preview)))
-	records = append(records, children...)
-
-	return append(records, t.userRecords(x, members)...)
-}
-
-// children builds the child records and counts them. Ignored types are
-// neither sent nor counted, so counters always match what Omni receives.
-func (t *Translator) children(root sdktrace.ReadOnlySpan, x execInfo, members []sdktrace.ReadOnlySpan, logs []sdklog.Record) ([]Record, counters) {
-	var tally counters
-	var records []Record
-
-	rootID := root.SpanContext().SpanID()
-	for _, span := range members {
-		if span.SpanContext().SpanID() == rootID {
-			continue
-		}
-
-		if record, ok := t.spanRecord(span, x); ok && !t.ignored(record.Type()) {
-			tally.count(record.Type())
-			records = append(records, sanitize(record))
-		}
-	}
-
-	for _, found := range collectExceptions(members) {
-		tally.exceptions++
-		records = append(records, sanitize(t.exceptionRecord(found, x)))
-	}
-
-	logRecords := t.logRecords(logs, x)
-	tally.logs += len(logRecords)
-
-	return append(records, logRecords...), tally
-}
-
-func (c *counters) count(recordType string) {
-	switch recordType {
-	case RecordQuery:
-		c.queries++
-	case RecordOutgoingRequest:
-		c.outgoing++
-	case RecordQueuedJob:
-		c.jobsQueued++
-	case RecordCacheEvent:
-		c.cacheHits++
-	case RecordMail:
-		c.mail++
-	case RecordNotification:
-		c.notifications++
-	}
-}
-
-func (t *Translator) ignored(recordType string) bool {
-	switch recordType {
-	case RecordQuery:
-		return t.cfg.IgnoreQueries
-	case RecordOutgoingRequest:
-		return t.cfg.IgnoreOutgoingRequests
-	case RecordCacheEvent:
-		return t.cfg.IgnoreCacheEvents
-	case RecordMail:
-		return t.cfg.IgnoreMail
-	case RecordNotification:
-		return t.cfg.IgnoreNotifications
-	default:
-		return false
-	}
-}
-
-func (t *Translator) logRecords(logs []sdklog.Record, x execInfo) []Record {
-	records := make([]Record, 0, len(logs))
-
-	for _, entry := range logs {
-		if t.cfg.LogAllowed(psrLevel(entry)) {
-			records = append(records, sanitize(t.logRecord(entry, x)))
-		}
-	}
-
-	return records
-}
-
-func (t *Translator) emitStandaloneLog(entry sdklog.Record) {
-	if !sampledBy(entry.TraceID(), 1) {
-		return
-	}
-
-	x := execInfo{traceID: traceUUID(entry.TraceID())}
-	if !entry.TraceID().IsValid() {
-		x.traceID = traceUUID(newTraceID())
-	}
-
-	t.sink.Enqueue(t.logRecords([]sdklog.Record{entry}, x))
-}
-
-// emitLate sends a child span that ended after its execution was already sent.
-func (t *Translator) emitLate(buf *traceBuf, span sdktrace.ReadOnlySpan, owner ownerRef) {
-	delete(buf.spans, span.SpanContext().SpanID())
+// lateSpan handles a span that ended after its execution finished. Inside the
+// grace period it joins the waiting execution. After that it is sent alone and
+// counted as late.
+func (t *Translator) lateSpan(traceID trace.TraceID, span sdktrace.ReadOnlySpan, owner ownerRef) []work {
 	t.owners[span.SpanContext().SpanID()] = owner
 
-	if !owner.info.sampled {
-		return
+	if exec, waiting := t.pending[owner.info.root]; waiting {
+		exec.members = append(exec.members, span)
+
+		return nil
 	}
 
-	if record, ok := t.spanRecord(span, owner.info); ok && !t.ignored(record.Type()) {
-		t.sink.Enqueue([]Record{sanitize(record)})
+	t.lateChildren.Add(1)
+	t.forgetEmpty(traceID)
+
+	if !owner.info.sampled {
+		return nil
+	}
+
+	return []work{{kind: workLateSpan, spans: []sdktrace.ReadOnlySpan{span}, info: owner.info}}
+}
+
+func (t *Translator) lateLog(entry sdklog.Record, owner ownerRef) []work {
+	if exec, waiting := t.pending[owner.info.root]; waiting {
+		exec.logs = append(exec.logs, entry)
+
+		return nil
+	}
+
+	t.lateChildren.Add(1)
+	t.forgetEmpty(entry.TraceID())
+
+	if !owner.info.sampled {
+		return nil
+	}
+
+	return []work{{kind: workLateLog, logs: []sdklog.Record{entry}, info: owner.info}}
+}
+
+func (t *Translator) forgetEmpty(id trace.TraceID) {
+	if buf, ok := t.traces[id]; ok {
+		t.dropIfEmpty(id, buf)
 	}
 }
 
-// Sweep emits what is left of traces older than TraceMaxWait (their root span
-// never ended) and forgets old owners. It is called by a timer.
+// Sweep sends executions whose grace period is over, sends what is left of
+// traces older than TraceMaxWait (their root span never ended) and forgets old
+// owners. A timer calls it.
 func (t *Translator) Sweep() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	var items []work
 
+	t.mu.Lock()
 	now := t.now()
+
+	for id, exec := range t.pending {
+		if !now.Before(exec.due) {
+			delete(t.pending, id)
+			items = append(items, work{kind: workExec, exec: exec})
+		}
+	}
+
 	for id, buf := range t.traces {
 		if now.Sub(buf.since) >= t.cfg.TraceMaxWait {
-			t.emitOrphans(id, buf)
+			delete(t.traces, id)
+			items = append(items, t.orphanWork(id, buf))
 		}
 	}
 
@@ -360,42 +429,60 @@ func (t *Translator) Sweep() {
 			delete(t.owners, id)
 		}
 	}
+
+	t.compactOrder()
+	t.mu.Unlock()
+
+	t.run(items)
 }
 
-// Drain emits everything that is still held. Call it on shutdown.
-func (t *Translator) Drain() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	for id, buf := range t.traces {
-		t.emitOrphans(id, buf)
-	}
-}
-
-func (t *Translator) emitOrphans(id trace.TraceID, buf *traceBuf) {
-	delete(t.traces, id)
-
-	x := orphanInfo(id)
-	spans := make([]sdktrace.ReadOnlySpan, 0, len(buf.spans))
-	for _, span := range buf.spans {
-		spans = append(spans, span)
+// compactOrder drops ids that are no longer held from the eviction queue.
+func (t *Translator) compactOrder() {
+	if len(t.order) <= 2*len(t.traces)+16 {
+		return
 	}
 
-	slices.SortFunc(spans, func(a, b sdktrace.ReadOnlySpan) int { return a.StartTime().Compare(b.StartTime()) })
-
-	var records []Record
-	for _, span := range spans {
-		if record, ok := t.spanRecord(span, x); ok && !t.ignored(record.Type()) {
-			records = append(records, sanitize(record))
+	kept := t.order[:0]
+	for _, id := range t.order {
+		if _, ok := t.traces[id]; ok {
+			kept = append(kept, id)
 		}
 	}
 
-	for _, found := range collectExceptions(spans) {
-		records = append(records, sanitize(t.exceptionRecord(found, x)))
+	t.order = kept
+}
+
+// FlushPending sends every execution that is waiting out its grace period.
+func (t *Translator) FlushPending() {
+	t.mu.Lock()
+	items := t.takePending()
+	t.mu.Unlock()
+
+	t.run(items)
+}
+
+func (t *Translator) takePending() []work {
+	items := make([]work, 0, len(t.pending))
+	for id, exec := range t.pending {
+		delete(t.pending, id)
+		items = append(items, work{kind: workExec, exec: exec})
 	}
 
-	records = append(records, t.logRecords(buf.logs, x)...)
-	if len(records) > 0 {
-		t.sink.Enqueue(records)
+	return items
+}
+
+// Drain sends everything that is still held. Call it on shutdown.
+func (t *Translator) Drain() {
+	t.mu.Lock()
+	items := t.takePending()
+
+	for id, buf := range t.traces {
+		delete(t.traces, id)
+		items = append(items, t.orphanWork(id, buf))
 	}
+
+	t.order = nil
+	t.mu.Unlock()
+
+	t.run(items)
 }

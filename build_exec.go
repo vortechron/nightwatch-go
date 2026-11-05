@@ -93,7 +93,7 @@ func (t *Translator) requestRecord(root sdktrace.ReadOnlySpan, x execInfo, c cou
 	record["sending"] = int64(0)
 	record["terminating"] = int64(0)
 	executionCounters(record, c)
-	record["peak_memory_usage"] = peakBytes(attrs)
+	record["peak_memory_usage"] = t.peakBytes(attrs)
 	record["exception_preview"] = trimPreview(preview)
 	record["context"] = "{}"
 	record["headers"] = t.headersJSON(attrs)
@@ -102,12 +102,12 @@ func (t *Translator) requestRecord(root sdktrace.ReadOnlySpan, x execInfo, c cou
 	return record
 }
 
-func peakBytes(attrs attrSet) int64 {
+func (t *Translator) peakBytes(attrs attrSet) int64 {
 	if value := attrs.int(AttrPeakMemory); value > 0 {
 		return value
 	}
 
-	return peakMemory()
+	return t.mem.read(t.now())
 }
 
 // headersJSON re-redacts even though capture helpers already did: a span
@@ -164,7 +164,7 @@ func (t *Translator) commandRecord(root sdktrace.ReadOnlySpan, x execInfo, c cou
 	record["exit_code"] = max(min(exit, 255), 0)
 	stagedDurations(record, root)
 	executionCounters(record, c)
-	record["peak_memory_usage"] = peakBytes(attrs)
+	record["peak_memory_usage"] = t.peakBytes(attrs)
 	record["exception_preview"] = trimPreview(preview)
 	record["context"] = "{}"
 
@@ -188,7 +188,7 @@ func (t *Translator) scheduledTaskRecord(root sdktrace.ReadOnlySpan, x execInfo,
 	record["status"] = enumOr(attrs.str(AttrTaskStatus), statusFor(root), "processed", "failed", "skipped")
 	record["duration"] = micros(spanDuration(root))
 	executionCounters(record, c)
-	record["peak_memory_usage"] = peakBytes(attrs)
+	record["peak_memory_usage"] = t.peakBytes(attrs)
 	record["exception_preview"] = trimPreview(preview)
 	record["context"] = "{}"
 
@@ -215,7 +215,7 @@ func (t *Translator) jobAttemptRecord(root sdktrace.ReadOnlySpan, x execInfo, c 
 	record["status"] = enumOr(attrs.str(AttrJobStatus), statusFor(root), "processed", "released", "failed")
 	record["duration"] = micros(spanDuration(root))
 	executionCounters(record, c)
-	record["peak_memory_usage"] = peakBytes(attrs)
+	record["peak_memory_usage"] = t.peakBytes(attrs)
 	record["exception_preview"] = trimPreview(preview)
 	record["context"] = "{}"
 

@@ -13,6 +13,9 @@ func (t *Translator) userRecords(x execInfo, members []sdktrace.ReadOnlySpan) []
 		return nil
 	}
 
+	t.usersMu.Lock()
+	defer t.usersMu.Unlock()
+
 	if _, seen := t.users[x.user]; seen {
 		return nil
 	}

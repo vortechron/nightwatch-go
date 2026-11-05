@@ -1,6 +1,8 @@
 package nightwatch
 
 import (
+	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -96,4 +98,29 @@ func EncodeFrames(frames []Frame) string {
 	}
 
 	return jsonString(frames)
+}
+
+const maxStackFrames = 64
+
+// CaptureStack returns the Go call stack of the caller in the text format
+// ParseStack reads: a function line, then a tab and "file:line". skip is the
+// number of caller frames to leave out. It uses runtime.Callers, so the file
+// and line are the real ones.
+func CaptureStack(skip int) string {
+	pcs := make([]uintptr, maxStackFrames)
+	count := runtime.Callers(skip+2, pcs)
+	frames := runtime.CallersFrames(pcs[:count])
+
+	var out strings.Builder
+
+	for {
+		frame, more := frames.Next()
+		fmt.Fprintf(&out, "%s(...)\n\t%s:%d\n", frame.Function, frame.File, frame.Line)
+
+		if !more {
+			break
+		}
+	}
+
+	return out.String()
 }

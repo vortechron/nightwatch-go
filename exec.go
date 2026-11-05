@@ -3,8 +3,6 @@ package nightwatch
 import (
 	"math"
 	"strings"
-	"sync"
-	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -136,12 +134,6 @@ func (t *Translator) rateFor(root sdktrace.ReadOnlySpan, kind string) float64 {
 		return t.cfg.RequestSampleRate
 	}
 }
-
-var (
-	memoryMu      sync.Mutex
-	memoryChecked time.Time
-	memoryValue   int64
-)
 
 func firstUser(spans []sdktrace.ReadOnlySpan) string {
 	for _, span := range spans {

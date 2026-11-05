@@ -58,6 +58,7 @@ func testConfig() Config {
 		return map[string]string{"NIGHTWATCH_TOKEN": "t", "NIGHTWATCH_DEPLOY": "dep", "NIGHTWATCH_SERVER": "srv"}[k]
 	}, "host")
 	cfg.TraceMaxWait = time.Hour
+	cfg.RootGrace = 0
 
 	return cfg
 }
