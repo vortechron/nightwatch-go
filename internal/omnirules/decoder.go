@@ -41,7 +41,7 @@ func (d *Decoder) Decode(content []byte, contentEncoding string) (Batch, error) 
 	}
 
 	decoded := content
-	if encoding == "gzip" {
+	if encoding == encodingGzip {
 		decoded, err = d.gunzip(content)
 		if err != nil {
 			return Batch{}, err
@@ -85,11 +85,11 @@ func normalizeContentEncoding(contentEncoding string) (string, error) {
 		return "", nil
 	}
 
-	if normalized != "gzip" {
+	if normalized != encodingGzip {
 		return "", newPayloadError("Unsupported content encoding", 415)
 	}
 
-	return "gzip", nil
+	return encodingGzip, nil
 }
 
 func (d *Decoder) gunzip(content []byte) ([]byte, error) {
@@ -157,13 +157,13 @@ func validateRecords(records []any) ([]Event, error) {
 		eventType, ok := object["t"].(string)
 		if !ok || eventType == "" {
 			return nil, newCodedPayloadError("Each record must have a valid event type", 422, "", map[string]any{
-				"record_index": index,
+				keyRecordIndex: index,
 			})
 		}
 
 		if !Supports(eventType) {
 			return nil, newCodedPayloadError("Unsupported event type", 422, "UNSUPPORTED_EVENT_TYPE", map[string]any{
-				"record_index": index,
+				keyRecordIndex: index,
 				"event_type":   eventType,
 			})
 		}
@@ -187,8 +187,8 @@ func ensureSafeFieldTypes(event map[string]any, index int) error {
 
 		if !isBooleanLike(value) {
 			return newCodedPayloadError("Boolean telemetry fields must be booleans", 422, "", map[string]any{
-				"record_index": index,
-				"field":        field,
+				keyRecordIndex: index,
+				keyField:       field,
 			})
 		}
 	}
@@ -203,8 +203,8 @@ func ensureSafeFieldTypes(event map[string]any, index int) error {
 		case string, []any, map[string]any:
 		default:
 			return newCodedPayloadError("JSON telemetry fields must be objects, arrays, or strings", 422, "", map[string]any{
-				"record_index": index,
-				"field":        field,
+				keyRecordIndex: index,
+				keyField:       field,
 			})
 		}
 	}

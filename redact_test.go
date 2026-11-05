@@ -18,8 +18,10 @@ func TestRedactHeadersJSON(t *testing.T) {
 		want map[string]any
 	}{
 		{"exact names", `{"authorization":["Bearer abc"],"user-agent":["curl"]}`, map[string]any{"authorization": []any{"[redacted]"}, "user-agent": []any{"curl"}}},
-		{"mixed case names", `{"AUTHORIZATION":["x"],"Cookie":["a=1"],"X-Xsrf-Token":["t"],"x-csrf-token":["c"],"SET-COOKIE":["s=1","k=2"]}`,
-			map[string]any{"AUTHORIZATION": []any{"[redacted]"}, "Cookie": []any{"[redacted]"}, "X-Xsrf-Token": []any{"[redacted]"}, "x-csrf-token": []any{"[redacted]"}, "SET-COOKIE": []any{"[redacted]", "[redacted]"}}},
+		{
+			"mixed case names", `{"AUTHORIZATION":["x"],"Cookie":["a=1"],"X-Xsrf-Token":["t"],"x-csrf-token":["c"],"SET-COOKIE":["s=1","k=2"]}`,
+			map[string]any{"AUTHORIZATION": []any{"[redacted]"}, "Cookie": []any{"[redacted]"}, "X-Xsrf-Token": []any{"[redacted]"}, "x-csrf-token": []any{"[redacted]"}, "SET-COOKIE": []any{"[redacted]", "[redacted]"}},
+		},
 		{"string value", `{"proxy-authorization":"Basic zzz"}`, map[string]any{"proxy-authorization": "[redacted]"}},
 		{"nothing to redact", `{"accept":["*/*"]}`, map[string]any{"accept": []any{"*/*"}}},
 		{"bad json falls back", `{"authorization":`, map[string]any{}},

@@ -6,7 +6,9 @@
 //
 // and add the HTTP middleware after Goravel's telemetry middleware:
 //
-//	facades.Route().GlobalMiddleware(telemetryhttp.Telemetry(), nwgoravel.Middleware(app))
+//	WithMiddleware(func(m configuration.Middleware) {
+//		m.Append(telemetryhttp.Telemetry(), nwgoravel.LazyMiddleware(facades.App))
+//	})
 //
 // The provider points Goravel telemetry at Nightwatch, starts the sender,
 // wraps the cache, scheduler, console commands and queue jobs, and flushes on

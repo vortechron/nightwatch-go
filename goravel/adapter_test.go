@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -83,6 +84,7 @@ func (f *fakeDriver) Forget(key string) bool {
 
 	return ok
 }
+
 func (f *fakeDriver) Remember(key string, _ time.Duration, cb func() (any, error)) (any, error) {
 	if v, ok := f.data[key]; ok {
 		return v, nil
@@ -251,11 +253,11 @@ type fakeMail struct {
 	calls []string
 }
 
-func (f *fakeMail) To(a []string) mail.Mail             { f.calls = append(f.calls, "to"); return f }
-func (f *fakeMail) Cc(a []string) mail.Mail             { return f }
-func (f *fakeMail) Bcc(a []string) mail.Mail            { return f }
-func (f *fakeMail) Attach(a []string) mail.Mail         { return f }
-func (f *fakeMail) Subject(s string) mail.Mail          { return f }
+func (f *fakeMail) To(_ []string) mail.Mail             { f.calls = append(f.calls, "to"); return f }
+func (f *fakeMail) Cc(_ []string) mail.Mail             { return f }
+func (f *fakeMail) Bcc(_ []string) mail.Mail            { return f }
+func (f *fakeMail) Attach(_ []string) mail.Mail         { return f }
+func (f *fakeMail) Subject(_ string) mail.Mail          { return f }
 func (f *fakeMail) Content(mail.Content) mail.Mail      { return f }
 func (f *fakeMail) From(mail.Address) mail.Mail         { return f }
 func (f *fakeMail) Headers(map[string]string) mail.Mail { return f }
@@ -339,10 +341,12 @@ func (p *fakePending) OnConnection(c string) queue.PendingJob {
 	p.owner.opts = append(p.owner.opts, "conn:"+c)
 	return p
 }
+
 func (p *fakePending) OnQueue(q string) queue.PendingJob {
 	p.owner.opts = append(p.owner.opts, "queue:"+q)
 	return p
 }
+
 func (p *fakePending) Delay(time.Time) queue.PendingJob {
 	p.owner.opts = append(p.owner.opts, "delay")
 	return p
@@ -419,8 +423,8 @@ func TestQueue_DispatchCarriesEnvelopeAndWorkerContinuesTrace(t *testing.T) {
 	if attempts[0]["status"] != "failed" || attempts[0]["queue"] != "mail" || attempts[1]["attempt"] != 2 {
 		t.Fatalf("attempt records: %v / %v", attempts[0], attempts[1])
 	}
-	if retry, _ := failing.(*tracedJob).ShouldRetry(nil, 1); !retry {
-		t.Fatal("default retry")
+	if _, offers := failing.(queue.JobWithShouldRetry); offers {
+		t.Fatal("a job without ShouldRetry must not gain one")
 	}
 }
 
@@ -478,10 +482,45 @@ func TestShutdownRunner(t *testing.T) {
 }
 
 func TestRequestAttributes(t *testing.T) {
-	req := httptest.NewRequest("POST", "/a?x=1", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/a?x=1", nil)
 	req.ContentLength = 12
 	attrs := originAttributes(req)
 	if len(attrs) != 2 {
 		t.Fatalf("attrs: %v", attrs)
+	}
+}
+
+type retryJob struct{ fakeJob }
+
+func (retryJob) ShouldRetry(error, int) (bool, time.Duration) { return false, time.Second }
+
+func TestWrapJob_KeepsOwnRetryRule(t *testing.T) {
+	wrapped := wrapJob(&retryJob{}, newAttemptCounter())
+	retry, ok := wrapped.(queue.JobWithShouldRetry)
+	if !ok {
+		t.Fatal("must offer ShouldRetry")
+	}
+	if again, delay := retry.ShouldRetry(nil, 1); again || delay != time.Second {
+		t.Fatal("must delegate")
+	}
+}
+
+func TestTransport_RecordsOutgoingRequest(t *testing.T) {
+	out := setup(t)
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer target.Close()
+
+	ctx, end := nightwatch.StartCommand(context.Background(), nightwatch.CommandInfo{Name: "c"})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, target.URL+"/x", nil)
+	resp, err := (&http.Client{Transport: Transport(nil)}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	end(0, nil)
+
+	got := out.ofType("outgoing-request")
+	if len(got) != 1 || got[0]["status_code"] != int64(200) || got[0]["execution_source"] != "command" {
+		t.Fatalf("outgoing: %v", got)
 	}
 }

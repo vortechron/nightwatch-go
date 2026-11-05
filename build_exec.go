@@ -8,9 +8,9 @@ import (
 )
 
 // headRecord holds the fields every record starts with.
-func (t *Translator) headRecord(typ string, version int, at time.Time, group, traceID string) Record {
+func (t *Translator) headRecord(typ string, at time.Time, group, traceID string) Record {
 	record := Record{
-		"v":         version,
+		"v":         1,
 		"t":         typ,
 		"timestamp": unixSeconds(at),
 		"deploy":    TinyText(t.cfg.Deploy),
@@ -67,7 +67,7 @@ func (t *Translator) requestRecord(root sdktrace.ReadOnlySpan, x execInfo, c cou
 	attrs := newAttrSet(root.Attributes())
 	method := attrs.str(attrHTTPMethod)
 	path := attrs.str(attrHTTPRoute)
-	record := t.headRecord(RecordRequest, 1, root.StartTime(), RequestGroup([]string{method}, "", path), x.traceID)
+	record := t.headRecord(RecordRequest, root.StartTime(), RequestGroup([]string{method}, "", path), x.traceID)
 
 	duration := micros(spanDuration(root))
 	before, after := attrs.int(AttrStageBefore), attrs.int(AttrStageAfter)
@@ -151,7 +151,7 @@ func stagedDurations(record Record, root sdktrace.ReadOnlySpan) {
 func (t *Translator) commandRecord(root sdktrace.ReadOnlySpan, x execInfo, c counters, preview string) Record {
 	attrs := newAttrSet(root.Attributes())
 	name := attrs.str(AttrCommandName)
-	record := t.headRecord(RecordCommand, 1, root.StartTime(), NameGroup(name), x.traceID)
+	record := t.headRecord(RecordCommand, root.StartTime(), NameGroup(name), x.traceID)
 
 	exit := attrs.int(AttrCommandExitCode)
 	if !attrs.has(AttrCommandExitCode) && spanFailed(root) {
@@ -175,7 +175,7 @@ func (t *Translator) scheduledTaskRecord(root sdktrace.ReadOnlySpan, x execInfo,
 	attrs := newAttrSet(root.Attributes())
 	name, cron, zone := attrs.str(AttrTaskName), attrs.str(AttrTaskCron), attrs.str(AttrTaskTimezone)
 	repeat := int(attrs.int(AttrTaskRepeat))
-	record := t.headRecord(RecordScheduledTask, 1, root.StartTime(), ScheduledTaskGroup(name, cron, zone, repeat), x.traceID)
+	record := t.headRecord(RecordScheduledTask, root.StartTime(), ScheduledTaskGroup(name, cron, zone, repeat), x.traceID)
 
 	record["name"] = name
 	record["cron"] = cron
@@ -198,7 +198,7 @@ func (t *Translator) scheduledTaskRecord(root sdktrace.ReadOnlySpan, x execInfo,
 func (t *Translator) jobAttemptRecord(root sdktrace.ReadOnlySpan, x execInfo, c counters, preview string) Record {
 	attrs := newAttrSet(root.Attributes())
 	name := attrs.str(AttrJobName)
-	record := t.headRecord(RecordJobAttempt, 1, root.StartTime(), NameGroup(name), x.traceID)
+	record := t.headRecord(RecordJobAttempt, root.StartTime(), NameGroup(name), x.traceID)
 
 	attempt := int(attrs.int(AttrJobAttempt))
 	if attempt < 1 {

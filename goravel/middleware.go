@@ -26,7 +26,7 @@ func WithUserResolver(resolve UserResolver) Option {
 }
 
 type middleware struct {
-	app     contractsfoundation.Application
+	app     func() contractsfoundation.Application
 	redact  []string
 	resolve UserResolver
 }
@@ -36,7 +36,14 @@ type middleware struct {
 // the path and query, redacted headers, body sizes, the signed-in user and
 // panics with a stack trace. Register it after the telemetry middleware.
 func Middleware(app contractsfoundation.Application, options ...Option) contractshttp.Middleware {
-	m := &middleware{app: app, redact: Client().Config().RedactHeaders}
+	return LazyMiddleware(func() contractsfoundation.Application { return app }, options...)
+}
+
+// LazyMiddleware is Middleware for use in WithMiddleware, which runs before
+// the application exists. getApp is called when a request needs the user, for
+// example `nwgoravel.LazyMiddleware(facades.App)`.
+func LazyMiddleware(getApp func() contractsfoundation.Application, options ...Option) contractshttp.Middleware {
+	m := &middleware{app: getApp, redact: Client().Config().RedactHeaders}
 	for _, option := range options {
 		option(m)
 	}
@@ -124,7 +131,7 @@ func (m *middleware) userID(ctx contractshttp.Context) (id string, ok bool) {
 		}
 	}()
 
-	auth := m.app.MakeAuth(ctx)
+	auth := m.app().MakeAuth(ctx)
 	if auth == nil {
 		return "", false
 	}

@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/log/global"
+
 	"github.com/goravel/framework/contracts/console"
 
 	nightwatch "github.com/vortechron/nightwatch-go"
@@ -54,10 +57,12 @@ func (c *tracedCommand) Handle(ctx console.Context) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			end(1, panicError(recovered))
+			flushNow()
 			panic(recovered)
 		}
 
 		end(exitCode(err), err)
+		flushNow()
 	}()
 
 	return c.Command.Handle(ctx)
@@ -86,3 +91,25 @@ func (c *tracedConsoleContext) Done() <-chan struct{} { return c.traced.Done() }
 func (c *tracedConsoleContext) Err() error { return c.traced.Err() }
 
 func (c *tracedConsoleContext) Value(key any) any { return c.traced.Value(key) }
+
+// flushNow sends what is buffered. A command is short lived and the process
+// may exit right after it, so waiting for the timer would lose its records.
+func flushNow() {
+	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+	defer cancel()
+
+	// OpenTelemetry batches spans and logs for seconds; push them out first.
+	type flusher interface{ ForceFlush(context.Context) error }
+
+	if provider, ok := otel.GetTracerProvider().(flusher); ok {
+		_ = provider.ForceFlush(ctx)
+	}
+
+	if provider, ok := global.GetLoggerProvider().(flusher); ok {
+		_ = provider.ForceFlush(ctx)
+	}
+
+	Client().Flush(ctx)
+}
+
+const flushTimeout = 5 * time.Second

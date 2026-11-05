@@ -32,7 +32,7 @@ func (a attrSet) str(keys ...string) string {
 			continue
 		}
 
-		if text := value.Emit(); text != "" {
+		if text := value.String(); text != "" {
 			return text
 		}
 	}
@@ -70,5 +70,5 @@ func (a attrSet) bool(key string) bool {
 		return value.AsBool()
 	}
 
-	return truthy(value.Emit())
+	return truthy(value.String())
 }

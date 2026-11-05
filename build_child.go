@@ -11,7 +11,7 @@ const stageAction = "action"
 
 // childHead is the head of a record that belongs to an execution.
 func (t *Translator) childHead(typ string, at time.Time, group string, x execInfo) Record {
-	record := t.headRecord(typ, 1, at, group, x.traceID)
+	record := t.headRecord(typ, at, group, x.traceID)
 	record["execution_source"] = x.source
 	record["execution_id"] = x.id
 	record["execution_preview"] = trimPreview(x.preview)

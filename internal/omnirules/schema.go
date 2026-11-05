@@ -10,7 +10,7 @@ var tables = map[string]string{
 	"command":          "commands",
 	"queued-job":       "queued_jobs",
 	"job-attempt":      "job_attempts",
-	"cache-event":      "cache_events",
+	typeCacheEvent:     "cache_events",
 	"scheduled-task":   "scheduled_tasks",
 	"mail":             "mail",
 	"notification":     "notifications",

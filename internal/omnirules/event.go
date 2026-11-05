@@ -5,6 +5,13 @@ package omnirules
 
 import "fmt"
 
+const (
+	encodingGzip   = "gzip"
+	keyRecordIndex = "record_index"
+	keyField       = "field"
+	typeCacheEvent = "cache-event"
+)
+
 // Event is one decoded telemetry record.
 type Event map[string]any
 

@@ -9,20 +9,7 @@ var executionTypes = []string{"request", "command", "scheduled-task", "job-attem
 // A request, command or scheduled task is identified by trace_id and a job
 // attempt by attempt_id.
 func checkLinking(set Set) []Finding {
-	ids := map[string]bool{}
-
-	for _, kind := range executionTypes {
-		for _, record := range set.ByType[kind] {
-			field := "trace_id"
-			if kind == "job-attempt" {
-				field = "attempt_id"
-			}
-
-			if id, _ := record[field].(string); id != "" {
-				ids[id] = true
-			}
-		}
-	}
+	ids := executionIDs(set)
 
 	var findings []Finding
 
@@ -44,4 +31,23 @@ func checkLinking(set Set) []Finding {
 	}
 
 	return findings
+}
+
+func executionIDs(set Set) map[string]bool {
+	ids := map[string]bool{}
+
+	for _, kind := range executionTypes {
+		field := "trace_id"
+		if kind == "job-attempt" {
+			field = "attempt_id"
+		}
+
+		for _, record := range set.ByType[kind] {
+			if id, _ := record[field].(string); id != "" {
+				ids[id] = true
+			}
+		}
+	}
+
+	return ids
 }

@@ -20,7 +20,7 @@ func ParseAllow(path string) (Allow, error) {
 		return allow, nil
 	}
 
-	file, err := os.Open(path)
+	file, err := os.Open(path) //nolint:gosec // the path is a command line argument
 	if err != nil {
 		return allow, fmt.Errorf("opening allow list: %w", err)
 	}

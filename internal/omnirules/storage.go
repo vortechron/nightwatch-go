@@ -56,8 +56,8 @@ func CheckStorage(event Event, index int) *PayloadError {
 
 func storageError(index int, field string) *PayloadError {
 	return newCodedPayloadError("Telemetry storage would reject the record", 503, "STORAGE_UNAVAILABLE", map[string]any{
-		"record_index": index,
-		"field":        field,
+		keyRecordIndex: index,
+		keyField:       field,
 	})
 }
 
@@ -103,12 +103,12 @@ func validOptionalUUID(value any) bool {
 func checkEnums(event Event) string {
 	eventType, _ := event["t"].(string)
 	enums := map[string]map[string]bool{
-		"cache-event":    cacheTypes,
+		typeCacheEvent:   cacheTypes,
 		"job-attempt":    jobStatuses,
 		"scheduled-task": taskStatus,
 	}
 	field := "status"
-	if eventType == "cache-event" {
+	if eventType == typeCacheEvent {
 		field = "type"
 	}
 

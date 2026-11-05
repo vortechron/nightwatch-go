@@ -27,7 +27,7 @@ func Load(dir string) (Set, error) {
 	set := Set{ByType: map[string][]map[string]any{}}
 
 	for _, file := range files {
-		raw, err := os.ReadFile(file)
+		raw, err := os.ReadFile(file) //nolint:gosec // the files come from the folder given on the command line
 		if err != nil {
 			return Set{}, fmt.Errorf("reading %s: %w", file, err)
 		}

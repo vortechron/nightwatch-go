@@ -399,5 +399,3 @@ func (t *Translator) emitOrphans(id trace.TraceID, buf *traceBuf) {
 		t.sink.Enqueue(records)
 	}
 }
-
-func rand64() uint64 { return rand.Uint64() }

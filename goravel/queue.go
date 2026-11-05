@@ -32,7 +32,7 @@ type queueFacade struct {
 func (q *queueFacade) Register(jobs []queue.Job) {
 	wrapped := make([]queue.Job, len(jobs))
 	for i, job := range jobs {
-		wrapped[i] = &tracedJob{Job: job, attempts: q.attempts}
+		wrapped[i] = wrapJob(job, q.attempts)
 	}
 
 	q.Queue.Register(wrapped)
@@ -107,24 +107,24 @@ func (p *pendingJob) send(sync bool) error {
 		Value: nightwatch.EncodeJobEnvelope(ctx, p.connection, p.queueName),
 	})
 
-	real := p.queue.Job(p.job, args)
+	pending := p.queue.Job(p.job, args)
 	if p.connection != "" {
-		real = real.OnConnection(p.connection)
+		pending = pending.OnConnection(p.connection)
 	}
 
 	if p.queueName != "" {
-		real = real.OnQueue(p.queueName)
+		pending = pending.OnQueue(p.queueName)
 	}
 
 	if !p.delay.IsZero() {
-		real = real.Delay(p.delay)
+		pending = pending.Delay(p.delay)
 	}
 
 	var err error
 	if sync {
-		err = real.DispatchSync()
+		err = pending.DispatchSync()
 	} else {
-		err = real.Dispatch()
+		err = pending.Dispatch()
 	}
 
 	end(err)
@@ -165,13 +165,26 @@ func (j *tracedJob) Handle(args ...any) (err error) {
 	return j.Job.Handle(rest...) //nolint:wrapcheck // passthrough of the job error
 }
 
-// ShouldRetry keeps the job's own retry rule when it has one.
-func (j *tracedJob) ShouldRetry(err error, attempt int) (bool, time.Duration) {
-	if retry, ok := j.Job.(queue.JobWithShouldRetry); ok {
-		return retry.ShouldRetry(err, attempt)
+// wrapJob traces a job. A job with its own retry rule keeps it. A job without
+// one must not gain one: Goravel treats "has ShouldRetry" as "retry as often
+// as it says", so the wrapper only offers ShouldRetry when the job has it.
+func wrapJob(job queue.Job, attempts *attemptCounter) queue.Job {
+	traced := &tracedJob{Job: job, attempts: attempts}
+	if retry, ok := job.(queue.JobWithShouldRetry); ok {
+		return &tracedRetryJob{tracedJob: traced, retry: retry}
 	}
 
-	return true, 0
+	return traced
+}
+
+type tracedRetryJob struct {
+	*tracedJob
+	retry queue.JobWithShouldRetry
+}
+
+// ShouldRetry delegates to the job's own rule.
+func (j *tracedRetryJob) ShouldRetry(err error, attempt int) (bool, time.Duration) {
+	return j.retry.ShouldRetry(err, attempt)
 }
 
 // splitEnvelope removes the trailing envelope argument added by Queue().

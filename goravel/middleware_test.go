@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/goravel/framework/contracts/binding"
+	contractsfoundation "github.com/goravel/framework/contracts/foundation"
 	contractshttp "github.com/goravel/framework/contracts/http"
 	mocksauth "github.com/goravel/framework/mocks/auth"
 	mockscache "github.com/goravel/framework/mocks/cache"
@@ -32,7 +33,7 @@ type httpMocks struct {
 	orig *mockshttp.ResponseOrigin
 }
 
-func newHTTPMocks(t *testing.T, ctx context.Context, next func()) httpMocks {
+func newHTTPMocks(ctx context.Context, t *testing.T, next func()) httpMocks {
 	t.Helper()
 	m := httpMocks{
 		ctx:  mockshttp.NewContext(t),
@@ -40,7 +41,7 @@ func newHTTPMocks(t *testing.T, ctx context.Context, next func()) httpMocks {
 		resp: mockshttp.NewContextResponse(t),
 		orig: mockshttp.NewResponseOrigin(t),
 	}
-	origin := httptest.NewRequest("GET", "/tasks/7?a=1", nil)
+	origin := httptest.NewRequestWithContext(ctx, "GET", "/tasks/7?a=1", nil)
 	origin.ContentLength = 5
 	m.ctx.EXPECT().Context().Return(ctx).Maybe()
 	m.ctx.EXPECT().Request().Return(m.req).Maybe()
@@ -72,7 +73,7 @@ func TestMiddleware_EnrichesRequestSpan(t *testing.T) {
 	ctx, span := otel.Tracer("t").Start(context.Background(), "GET /tasks/:id", trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(attrString("http.request.method", "GET"), attrString("http.route", "/tasks/:id")))
 
-	m := newHTTPMocks(t, ctx, func() {})
+	m := newHTTPMocks(ctx, t, func() {})
 	app := authReturning(t, "42", nil)
 	resolve := func(_ contractshttp.Context, id string) (nightwatch.User, bool) {
 		return nightwatch.User{ID: id, Name: "Ada"}, true
@@ -101,7 +102,7 @@ func TestMiddleware_PanicIsRecordedAndRethrown(t *testing.T) {
 	SetClient(nightwatch.New(nightwatch.Config{}))
 	ctx, span := otel.Tracer("t").Start(context.Background(), "r", trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(attrString("http.request.method", "GET")))
-	m := newHTTPMocks(t, ctx, func() { panic("kaboom") })
+	m := newHTTPMocks(ctx, t, func() { panic("kaboom") })
 	app := authReturning(t, "", errors.New("guest"))
 
 	func() {
@@ -128,13 +129,13 @@ func TestMiddleware_AuthPanicMeansGuest(t *testing.T) {
 	SetClient(nightwatch.New(nightwatch.Config{}))
 	app := mocksfoundation.NewApplication(t)
 	app.EXPECT().MakeAuth(mock.Anything).Run(func(...contractshttp.Context) { panic("no guard") }).Return(nil)
-	m := &middleware{app: app}
+	m := &middleware{app: func() contractsfoundation.Application { return app }}
 	if id, ok := m.userID(nil); ok || id != "" {
 		t.Fatal("panic in auth must read as guest")
 	}
 	app2 := mocksfoundation.NewApplication(t)
 	app2.EXPECT().MakeAuth(mock.Anything).Return(nil)
-	if _, ok := (&middleware{app: app2}).userID(nil); ok {
+	if _, ok := (&middleware{app: func() contractsfoundation.Application { return app2 }}).userID(nil); ok {
 		t.Fatal("nil auth is a guest")
 	}
 }

@@ -3,6 +3,7 @@ package capture
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -41,7 +42,7 @@ func gz(t *testing.T, s string) []byte {
 
 func post(t *testing.T, url, token, key string, body []byte, encoding string) (int, map[string]any) {
 	t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -137,7 +138,8 @@ func TestAuthAndToken(t *testing.T) {
 	if status, out = post(t, srv.URL+"/api/omni/ingest", "secret", "", []byte(`{"records":[]}`), ""); status != 200 || out["received"] != float64(0) {
 		t.Fatalf("empty: %d %v", status, out)
 	}
-	resp, err := http.Get(srv.URL + "/api/omni/ping")
+	pingReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL+"/api/omni/ping", nil)
+	resp, err := http.DefaultClient.Do(pingReq)
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("ping: %v", err)
 	}

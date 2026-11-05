@@ -45,7 +45,7 @@ func (ServiceProvider) Runners(foundation.Application) []foundation.Runner {
 	return []foundation.Runner{&shutdownRunner{}}
 }
 
-type shutdownRunner struct{ done chan struct{} }
+type shutdownRunner struct{}
 
 func (r *shutdownRunner) Signature() string { return "nightwatch" }
 

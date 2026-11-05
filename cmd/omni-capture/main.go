@@ -36,7 +36,11 @@ func main() {
 
 	go func() {
 		<-ctx.Done()
-		_ = httpServer.Shutdown(context.Background())
+
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+
+		_ = httpServer.Shutdown(shutdownCtx)
 	}()
 
 	logger.Info("omni-capture listening", "addr", *addr, "dir", *dir)

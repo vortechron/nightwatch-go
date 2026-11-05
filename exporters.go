@@ -2,6 +2,7 @@ package nightwatch
 
 import (
 	"context"
+	crand "crypto/rand"
 
 	"go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -47,9 +48,7 @@ func (e logExporter) ForceFlush(context.Context) error { return nil }
 
 func newTraceID() trace.TraceID {
 	var id trace.TraceID
-	for i := range id {
-		id[i] = byte(rand64())
-	}
+	_, _ = crand.Read(id[:])
 
 	return id
 }

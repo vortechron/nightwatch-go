@@ -127,6 +127,13 @@ func compareField(kind, field string, want, got *profile, allow Allow) []Finding
 		return []Finding{{Type: kind, Field: field, Detail: "field missing on the Go side", Fatal: !allow.Field(kind, field)}}
 	}
 
+	findings := kindFindings(kind, field, want, got, allow)
+	findings = append(findings, groupFindings(kind, field, got)...)
+
+	return append(findings, enumFindings(kind, field, want, got)...)
+}
+
+func kindFindings(kind, field string, want, got *profile, allow Allow) []Finding {
 	var findings []Finding
 
 	for goKind := range got.kinds {
@@ -138,11 +145,23 @@ func compareField(kind, field string, want, got *profile, allow Allow) []Finding
 		}
 	}
 
+	return findings
+}
+
+func groupFindings(kind, field string, got *profile) []Finding {
+	var findings []Finding
+
 	for length := range got.groups {
 		if length != 0 && length != 32 {
 			findings = append(findings, Finding{Type: kind, Field: field, Detail: fmt.Sprintf("_group length %d", length), Fatal: true})
 		}
 	}
+
+	return findings
+}
+
+func enumFindings(kind, field string, want, got *profile) []Finding {
+	var findings []Finding
 
 	for value := range got.values {
 		if len(want.values) > 0 && !want.values[value] {

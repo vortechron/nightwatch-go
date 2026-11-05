@@ -1,5 +1,7 @@
 package omnirules
 
+import "errors"
+
 // DefaultLimits are the limits of Omni's config/omni.php: 10 MB compressed,
 // 64 MB decompressed, 10,000 records per batch.
 var DefaultLimits = DecoderLimits{
@@ -12,7 +14,8 @@ var DefaultLimits = DecoderLimits{
 func Validate(body []byte, contentEncoding string) (Batch, *PayloadError) {
 	batch, err := NewDecoder(DefaultLimits).Decode(body, contentEncoding)
 	if err != nil {
-		if payloadErr, ok := err.(*PayloadError); ok { //nolint:errorlint // the decoder only returns *PayloadError
+		var payloadErr *PayloadError
+		if errors.As(err, &payloadErr) {
 			return Batch{}, payloadErr
 		}
 

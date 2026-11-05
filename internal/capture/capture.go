@@ -18,6 +18,12 @@ import (
 	"github.com/vortechron/nightwatch-go/internal/omnirules"
 )
 
+const (
+	keyError    = "error"
+	keyReceived = "received"
+	keyStatus   = "status"
+)
+
 // Server answers like Omni: POST /api/agent-auth, POST /api/omni/ingest and
 // GET /api/omni/ping.
 type Server struct {
@@ -85,13 +91,13 @@ func (s *Server) Rejected() []Rejection {
 func (s *Server) authorised(w http.ResponseWriter, r *http.Request) (string, bool) {
 	token, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !found || token == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "Unauthorized"})
+		writeJSON(w, http.StatusUnauthorized, map[string]any{keyError: "Unauthorized"})
 
 		return "", false
 	}
 
 	if s.token != "" && token != s.token {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "Invalid token"})
+		writeJSON(w, http.StatusUnauthorized, map[string]any{keyError: "Invalid token"})
 
 		return "", false
 	}
@@ -125,7 +131,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, int64(omnirules.DefaultLimits.MaxBodyBytes)+1))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid JSON payload"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{keyError: "Invalid JSON payload"})
 
 		return
 	}
@@ -138,25 +144,25 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(batch.Events) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "received": 0})
+		writeJSON(w, http.StatusOK, map[string]any{keyStatus: "ok", keyReceived: 0})
 
 		return
 	}
 
 	if key := r.Header.Get("Idempotency-Key"); s.duplicate(key) {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "received": len(batch.Events), "duplicate": true})
+		writeJSON(w, http.StatusOK, map[string]any{keyStatus: "ok", keyReceived: len(batch.Events), "duplicate": true})
 
 		return
 	}
 
 	if err := s.save(batch); err != nil {
 		s.log.Error("capture: cannot save batch", "error", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "capture failed", "code": "STORAGE_UNAVAILABLE"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{keyError: "capture failed", "code": "STORAGE_UNAVAILABLE"})
 
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "received": len(batch.Events)})
+	writeJSON(w, http.StatusOK, map[string]any{keyStatus: "ok", keyReceived: len(batch.Events)})
 }
 
 func (s *Server) duplicate(key string) bool {
@@ -183,7 +189,7 @@ func (s *Server) reject(w http.ResponseWriter, perr *omnirules.PayloadError) {
 
 	s.log.Warn("capture: batch rejected", "status", perr.Status, "message", perr.Message, "code", perr.Code, "context", perr.Context)
 
-	payload := map[string]any{"error": perr.Message}
+	payload := map[string]any{keyError: perr.Message}
 	if perr.Code != "" {
 		payload["code"] = perr.Code
 	}
