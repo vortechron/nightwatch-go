@@ -39,6 +39,7 @@ const (
 	AttrRouteName    = "nightwatch.route.name"
 	AttrRouteAction  = "nightwatch.route.action"
 	AttrHeaders      = "nightwatch.request.headers"
+	AttrPayload      = "nightwatch.request.payload"
 	AttrPeakMemory   = "nightwatch.peak_memory"
 	AttrStageBefore  = "nightwatch.stage.before_middleware"
 	AttrStageAfter   = "nightwatch.stage.after_middleware"

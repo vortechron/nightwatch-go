@@ -168,4 +168,3 @@ func psrLevel(entry sdklog.Record) string {
 		return "debug"
 	}
 }
-

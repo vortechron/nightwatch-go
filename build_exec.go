@@ -96,8 +96,8 @@ func (t *Translator) requestRecord(root sdktrace.ReadOnlySpan, x execInfo, c cou
 	record["peak_memory_usage"] = peakBytes(attrs)
 	record["exception_preview"] = trimPreview(preview)
 	record["context"] = "{}"
-	record["headers"] = headersJSON(attrs)
-	record["payload"] = ""
+	record["headers"] = t.headersJSON(attrs)
+	record["payload"] = t.payloadFor(attrs)
 
 	return record
 }
@@ -110,12 +110,20 @@ func peakBytes(attrs attrSet) int64 {
 	return peakMemory()
 }
 
-func headersJSON(attrs attrSet) string {
-	if headers := attrs.str(AttrHeaders); headers != "" {
-		return headers
+// headersJSON re-redacts even though capture helpers already did: a span
+// attribute set by hand must not be able to leak a secret.
+func (t *Translator) headersJSON(attrs attrSet) string {
+	return Text(RedactHeadersJSON(attrs.str(AttrHeaders), t.cfg.RedactHeaders))
+}
+
+// payloadFor returns the redacted body of a failed request. It stays empty
+// unless CaptureRequestPayload is on and the status is 500.
+func (t *Translator) payloadFor(attrs attrSet) string {
+	if !t.cfg.CaptureRequestPayload || attrs.int(attrHTTPStatus) != 500 {
+		return ""
 	}
 
-	return "{}"
+	return Text(RedactPayloadJSON(attrs.str(AttrPayload), t.cfg.RedactPayloadFields))
 }
 
 func requestURL(attrs attrSet) string {

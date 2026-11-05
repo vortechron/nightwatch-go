@@ -16,8 +16,6 @@ const (
 	defaultMaxBuffered   = 5000
 )
 
-var defaultRedactHeaders = []string{"Authorization", "Cookie", "Proxy-Authorization", "X-XSRF-TOKEN"}
-
 // logLevels lists PSR-3 levels from the least to the most severe.
 var logLevels = []string{"debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"}
 
@@ -43,7 +41,12 @@ type Config struct {
 	IgnoreOutgoingRequests bool
 	IgnoreQueries          bool
 	LogLevel               string
-	RedactHeaders          []string
+	// RedactHeaders always includes the mandatory secrets; env adds more.
+	RedactHeaders []string
+	// CaptureRequestPayload keeps the body of failed (500) requests. Off by
+	// default, like the PHP package. RedactPayloadFields are blanked first.
+	CaptureRequestPayload bool
+	RedactPayloadFields   []string
 
 	// BatchSize and FlushInterval trigger a send. MaxBuffered bounds memory:
 	// past it the oldest records are dropped and counted.
@@ -80,7 +83,9 @@ func ConfigFromEnv(getenv func(string) string, hostname string) Config {
 		IgnoreOutgoingRequests: truthy(getenv("NIGHTWATCH_IGNORE_OUTGOING_REQUESTS")),
 		IgnoreQueries:          truthy(getenv("NIGHTWATCH_IGNORE_QUERIES")),
 		LogLevel:               strings.ToLower(firstNonEmpty(getenv("NIGHTWATCH_LOG_LEVEL"), getenv("LOG_LEVEL"), "debug")),
-		RedactHeaders:          splitList(getenv("NIGHTWATCH_REDACT_HEADERS"), defaultRedactHeaders),
+		RedactHeaders:          mergeRedactNames(splitList(getenv("NIGHTWATCH_REDACT_HEADERS"), nil)),
+		CaptureRequestPayload:  truthy(getenv("NIGHTWATCH_CAPTURE_REQUEST_PAYLOAD")),
+		RedactPayloadFields:    splitList(getenv("NIGHTWATCH_REDACT_PAYLOAD_FIELDS"), defaultRedactPayloadFields),
 
 		BatchSize:     defaultBatchSize,
 		FlushInterval: defaultFlushInterval,

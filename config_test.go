@@ -26,8 +26,7 @@ func TestConfigFromEnv_Defaults(t *testing.T) {
 	if cfg.BatchSize != 500 || cfg.FlushInterval != 5*time.Second || cfg.TraceMaxWait != 10*time.Second {
 		t.Fatalf("batching: %+v", cfg)
 	}
-	want := []string{"Authorization", "Cookie", "Proxy-Authorization", "X-XSRF-TOKEN"}
-	if len(cfg.RedactHeaders) != 4 || cfg.RedactHeaders[3] != want[3] {
+	if len(cfg.RedactHeaders) != 6 || cfg.RedactHeaders[5] != "X-XSRF-TOKEN" || cfg.CaptureRequestPayload {
 		t.Fatalf("redact: %v", cfg.RedactHeaders)
 	}
 }
@@ -64,7 +63,7 @@ func TestConfigFromEnv_Overrides(t *testing.T) {
 	if cfg.LogLevel != "info" {
 		t.Fatalf("level %q", cfg.LogLevel)
 	}
-	if len(cfg.RedactHeaders) != 2 || cfg.RedactHeaders[1] != "X-B" {
+	if len(cfg.RedactHeaders) != 8 || cfg.RedactHeaders[7] != "X-B" {
 		t.Fatalf("redact %v", cfg.RedactHeaders)
 	}
 }
