@@ -24,13 +24,13 @@ Needs Go 1.26. The core package `nightwatch` does not import Goravel. The subpac
 1. Add the provider last in `bootstrap/providers.go`. It binds the client in Goravel's container (key
    `nwgoravel.BindingClient`, read it with `nwgoravel.ClientFrom(app)`; there is no package level client), points
    telemetry at Nightwatch, starts the sender, wraps cache, schedule, console commands and queue jobs, and flushes on
-   shutdown. Use `&nwgoravel.ServiceProvider{Config: &cfg}` to pass a hand built `nightwatch.Config`.
+   shutdown. Use `&nwgoravel.NightwatchServiceProvider{Config: &cfg}` to pass a hand built `nightwatch.Config`.
 
 ```go
 import nwgoravel "github.com/vortechron/nightwatch-go/goravel"
 
 &telemetry.ServiceProvider{},
-&nwgoravel.ServiceProvider{}, // after the framework providers
+&nwgoravel.NightwatchServiceProvider{}, // after the framework providers
 ```
 
 2. Add the HTTP middleware (Goravel's telemetry middleware first, ours second):

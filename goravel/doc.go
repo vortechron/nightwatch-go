@@ -2,7 +2,7 @@
 //
 // Add one provider after the framework providers:
 //
-//	&nwgoravel.ServiceProvider{}
+//	&nwgoravel.NightwatchServiceProvider{}
 //
 // and add the HTTP middleware after Goravel's telemetry middleware:
 //

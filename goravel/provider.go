@@ -12,7 +12,7 @@ import (
 
 const shutdownTimeout = 10 * time.Second
 
-// ServiceProvider is the one call that wires Nightwatch into Goravel.
+// NightwatchServiceProvider is the one call that wires Nightwatch into Goravel.
 //
 // List it after the framework providers (cache, queue, schedule, mail, auth,
 // telemetry). Register binds the client in the container and points telemetry
@@ -22,13 +22,13 @@ const shutdownTimeout = 10 * time.Second
 // Register panics with ErrExporterConflict when the app already configured a
 // different telemetry exporter, because failing at boot is clearer than
 // silently sending nothing.
-type ServiceProvider struct {
+type NightwatchServiceProvider struct {
 	// Config overrides the environment. Nil reads the NIGHTWATCH_* variables.
 	Config *nightwatch.Config
 }
 
 // Register binds the client and selects the Nightwatch exporters.
-func (p ServiceProvider) Register(app foundation.Application) {
+func (p NightwatchServiceProvider) Register(app foundation.Application) {
 	app.Singleton(BindingClient, func(foundation.Application) (any, error) {
 		if p.Config != nil {
 			return nightwatch.New(*p.Config), nil
@@ -50,7 +50,7 @@ func (p ServiceProvider) Register(app foundation.Application) {
 }
 
 // Boot starts the client and wraps the framework services.
-func (ServiceProvider) Boot(app foundation.Application) {
+func (NightwatchServiceProvider) Boot(app foundation.Application) {
 	client := ClientFrom(app)
 	if client == nil || !client.Enabled() {
 		return
@@ -63,7 +63,7 @@ func (ServiceProvider) Boot(app foundation.Application) {
 // Runners returns the shutdown hook that sends what is still buffered. It runs
 // after Goravel's telemetry runner (priority 100), which hands the last spans
 // to the exporters.
-func (ServiceProvider) Runners(app foundation.Application) []foundation.Runner {
+func (NightwatchServiceProvider) Runners(app foundation.Application) []foundation.Runner {
 	return []foundation.Runner{&shutdownRunner{client: ClientFrom(app)}}
 }
 

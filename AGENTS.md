@@ -35,4 +35,6 @@ Go 1.26, toolchain go1.27.3 (`GOTOOLCHAIN=auto`). Pin OpenTelemetry to the versi
   job at once and without limit unless the job has `ShouldRetry`; always give example jobs one.
 - No package level mutable state: the Goravel client lives in the container (`nwgoravel.BindingClient`), the memory
   reading in the Translator.
+- Goravel keys service providers by their `%T` name. The provider is `NightwatchServiceProvider` on purpose: never export a type
+  called `ServiceProvider` from a package named `goravel`, it would collide with every other such package.
 - Do not push or tag without the owner asking.

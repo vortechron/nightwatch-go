@@ -37,6 +37,6 @@ func Providers() []foundation.ServiceProvider {
 		&schedule.ServiceProvider{},
 		&telemetry.ServiceProvider{},
 		// Last: it points telemetry at Nightwatch and wraps the services above.
-		&nwgoravel.ServiceProvider{},
+		&nwgoravel.NightwatchServiceProvider{},
 	}
 }

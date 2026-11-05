@@ -347,14 +347,14 @@ func TestProvider_RegisterBootWrapAndShutdown(t *testing.T) {
 	app.EXPECT().Instance(binding.Queue, mock.Anything).Once()
 	app.EXPECT().Fresh(binding.Cache, binding.Schedule, binding.Artisan, binding.Queue).Once()
 
-	var p ServiceProvider
+	var p NightwatchServiceProvider
 	p.Register(app)
 
 	created, err := factory(app)
 	if err != nil || created.(*nightwatch.Client) == nil {
 		t.Fatal("the binding must build a client")
 	}
-	custom := ServiceProvider{Config: &nightwatch.Config{Enabled: false}}
+	custom := NightwatchServiceProvider{Config: &nightwatch.Config{Enabled: false}}
 	app2 := mocksfoundation.NewApplication(t)
 	app2.EXPECT().Singleton(BindingClient, mock.Anything).Run(func(_ any, cb func(contractsfoundation.Application) (any, error)) { factory = cb })
 	app2.EXPECT().Make(BindingClient).Return(nil, errors.New("not resolved"))
@@ -392,7 +392,7 @@ func TestProvider_RegisterPanicsOnAnExporterConflict(t *testing.T) {
 			t.Fatalf("want a conflict panic, got %v", err)
 		}
 	}()
-	ServiceProvider{}.Register(app)
+	NightwatchServiceProvider{}.Register(app)
 }
 
 func TestProvider_DisabledDoesNothing(t *testing.T) {
@@ -400,7 +400,7 @@ func TestProvider_DisabledDoesNothing(t *testing.T) {
 	app.EXPECT().Singleton(BindingClient, mock.Anything)
 	app.EXPECT().Make(BindingClient).Return(nightwatch.New(nightwatch.Config{}), nil)
 
-	var p ServiceProvider
+	var p NightwatchServiceProvider
 	p.Register(app)
 	p.Boot(app)
 
