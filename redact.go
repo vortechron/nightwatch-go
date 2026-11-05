@@ -3,6 +3,7 @@ package nightwatch
 import (
 	"encoding/json"
 	"net/textproto"
+	"net/url"
 	"slices"
 	"strings"
 )
@@ -17,14 +18,28 @@ var mandatoryRedactHeaders = []string{
 	"Authorization", "Cookie", "Proxy-Authorization", "Set-Cookie", "X-CSRF-TOKEN", "X-XSRF-TOKEN",
 }
 
+// defaultRedactQuery are query parameters whose values are redacted in URLs.
+// PHP sends the full URL unredacted; this client does not, because tokens in
+// links (password resets, signed URLs, OAuth callbacks) are common.
+var defaultRedactQuery = []string{
+	"password", "password_confirmation", "token", "access_token", "refresh_token", "id_token", "api_key", "apikey",
+	"key", "secret", "client_secret", "signature", "code", "auth",
+}
+
 var defaultRedactPayloadFields = []string{"_token", "password", "password_confirmation"}
 
 func equalFold(a, b string) bool { return strings.EqualFold(a, b) }
 
-// mergeRedactNames returns the mandatory names followed by the extra ones,
-// without case-insensitive duplicates.
+// mergeRedactNames returns the mandatory header names followed by the extra
+// ones, without case-insensitive duplicates.
 func mergeRedactNames(extra []string) []string {
-	merged := slices.Clone(mandatoryRedactHeaders)
+	return mergeNames(mandatoryRedactHeaders, extra)
+}
+
+// mergeNames returns base followed by the extra names that are not in it,
+// ignoring case.
+func mergeNames(base, extra []string) []string {
+	merged := slices.Clone(base)
 
 	for _, name := range extra {
 		if !slices.ContainsFunc(merged, func(have string) bool { return equalFold(have, name) }) {
@@ -72,6 +87,44 @@ func redactValue(value any) any {
 	}
 
 	return redactedValue
+}
+
+// RedactQuery parses a URL query, replaces the values of the named keys
+// (ignoring case) with "[redacted]", keeps the other parameters and encodes
+// again with the keys sorted, so the result is deterministic. A query that
+// cannot be parsed gives "": it is dropped, never passed through.
+func RedactQuery(raw string, names []string) string {
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return ""
+	}
+
+	for key, list := range values {
+		if matches(key, names) {
+			for i := range list {
+				list[i] = redactedValue
+			}
+		}
+	}
+
+	return values.Encode()
+}
+
+// RedactURL redacts the query of a URL with RedactQuery. The fragment is
+// dropped when there is a query; a query that cannot be parsed is dropped.
+func RedactURL(raw string, names []string) string {
+	base, query, found := strings.Cut(raw, "?")
+	if !found {
+		return raw
+	}
+
+	query, _, _ = strings.Cut(query, "#")
+
+	if redacted := RedactQuery(query, names); redacted != "" {
+		return base + "?" + redacted
+	}
+
+	return base
 }
 
 // HeadersToJSON builds the value of AttrHeaders from real headers, redacting

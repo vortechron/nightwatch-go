@@ -79,7 +79,7 @@ func (m *middleware) Handle(ctx contractshttp.Context) {
 	span := trace.SpanFromContext(ctx.Context())
 	req := ctx.Request()
 
-	span.SetAttributes(requestAttributes(req, cfg.RedactHeaders)...)
+	span.SetAttributes(requestAttributes(req, cfg.RedactHeaders, cfg.RedactQuery)...)
 	body := captureBody(req, cfg)
 
 	// Sign-in usually happens in an earlier middleware: carry the user into the
@@ -102,23 +102,28 @@ func (m *middleware) Handle(ctx contractshttp.Context) {
 	req.Next()
 }
 
-func requestAttributes(req contractshttp.ContextRequest, redact []string) []attribute.KeyValue {
+func requestAttributes(req contractshttp.ContextRequest, redactHeaders, redactQuery []string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String("url.path", req.Path()),
-		attribute.String("nightwatch.request.headers", nightwatch.HeadersToJSON(req.Headers(), redact)),
+		attribute.String("nightwatch.request.headers", nightwatch.HeadersToJSON(req.Headers(), redactHeaders)),
 	}
 
 	if origin := req.Origin(); origin != nil {
-		attrs = append(attrs, originAttributes(origin)...)
+		attrs = append(attrs, originAttributes(origin, redactQuery)...)
 	}
 
 	return attrs
 }
 
-func originAttributes(origin *http.Request) []attribute.KeyValue {
+// originAttributes reads the query and body size. The query is redacted here,
+// at capture time, so a token in a link never sits in a span attribute.
+func originAttributes(origin *http.Request, redactQuery []string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{}
+
 	if origin.URL != nil && origin.URL.RawQuery != "" {
-		attrs = append(attrs, attribute.String("url.query", origin.URL.RawQuery))
+		if query := nightwatch.RedactQuery(origin.URL.RawQuery, redactQuery); query != "" {
+			attrs = append(attrs, attribute.String("url.query", query))
+		}
 	}
 
 	if origin.ContentLength > 0 {

@@ -49,6 +49,9 @@ type Config struct {
 	LogLevel               string
 	// RedactHeaders always includes the mandatory secrets; env adds more.
 	RedactHeaders []string
+	// RedactQuery lists query parameters whose values are replaced in URLs.
+	// It always includes the defaults; NIGHTWATCH_REDACT_QUERY adds names.
+	RedactQuery []string
 	// CaptureRequestPayload keeps the body of failed (500) requests. Off by
 	// default, like the PHP package. RedactPayloadFields are blanked first.
 	CaptureRequestPayload bool
@@ -107,6 +110,7 @@ func ConfigFromEnv(getenv func(string) string, hostname string) Config {
 		IgnoreQueries:              truthy(getenv("NIGHTWATCH_IGNORE_QUERIES")),
 		LogLevel:                   strings.ToLower(firstNonEmpty(getenv("NIGHTWATCH_LOG_LEVEL"), getenv("LOG_LEVEL"), "debug")),
 		RedactHeaders:              mergeRedactNames(splitList(getenv("NIGHTWATCH_REDACT_HEADERS"), nil)),
+		RedactQuery:                mergeNames(defaultRedactQuery, splitList(getenv("NIGHTWATCH_REDACT_QUERY"), nil)),
 		CaptureRequestPayload:      truthy(getenv("NIGHTWATCH_CAPTURE_REQUEST_PAYLOAD")),
 		CaptureExceptionSourceCode: enabledByDefault(getenv("NIGHTWATCH_CAPTURE_EXCEPTION_SOURCE_CODE")),
 		RedactPayloadFields:        splitList(getenv("NIGHTWATCH_REDACT_PAYLOAD_FIELDS"), defaultRedactPayloadFields),
@@ -219,6 +223,10 @@ func (c Config) withDefaults() Config {
 	}
 
 	c.RootGrace = max(c.RootGrace, 0)
+
+	// A hand built Config must never send secrets because a list was left empty.
+	c.RedactHeaders = mergeRedactNames(c.RedactHeaders)
+	c.RedactQuery = mergeNames(defaultRedactQuery, c.RedactQuery)
 
 	return c
 }

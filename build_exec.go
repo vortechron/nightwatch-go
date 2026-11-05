@@ -74,7 +74,7 @@ func (t *Translator) requestRecord(root sdktrace.ReadOnlySpan, x execInfo, c cou
 
 	record["user"] = x.user
 	record["method"] = method
-	record["url"] = TinyText(requestURL(attrs))
+	record["url"] = TinyText(t.requestURL(attrs))
 	record["route_name"] = attrs.str(AttrRouteName)
 	record["route_methods"] = []string{method}
 	record["route_domain"] = ""
@@ -126,17 +126,20 @@ func (t *Translator) payloadFor(attrs attrSet) string {
 	return Text(RedactPayloadJSON(attrs.str(AttrPayload), t.cfg.RedactPayloadFields))
 }
 
-func requestURL(attrs attrSet) string {
+// requestURL builds the request URL. Secrets in the query are redacted here
+// even though the middleware already did it, so a span attribute set by hand
+// cannot leak one.
+func (t *Translator) requestURL(attrs attrSet) string {
 	if full := attrs.str(attrURLFull); full != "" {
-		return full
+		return RedactURL(full, t.cfg.RedactQuery)
 	}
 
-	url := attrs.str(attrURLScheme) + "://" + attrs.str(attrServerAddress) + attrs.str(attrURLPath)
-	if query := attrs.str(attrURLQuery); query != "" {
-		url += "?" + query
+	target := attrs.str(attrURLScheme) + "://" + attrs.str(attrServerAddress) + attrs.str(attrURLPath)
+	if query := RedactQuery(attrs.str(attrURLQuery), t.cfg.RedactQuery); query != "" {
+		target += "?" + query
 	}
 
-	return url
+	return target
 }
 
 // stagedDurations fills the three stages non-request executions have.

@@ -108,7 +108,7 @@ func (t *Translator) outgoingRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x
 
 	record["host"] = TinyText(host)
 	record["method"] = attrs.str(attrHTTPMethod)
-	record["url"] = TinyText(attrs.str(attrURLFull))
+	record["url"] = TinyText(RedactURL(attrs.str(attrURLFull), t.cfg.RedactQuery))
 	record["duration"] = micros(spanDuration(span))
 	record["request_size"] = attrs.int(attrHTTPReqSize)
 	record["response_size"] = attrs.int(attrHTTPRespSize)

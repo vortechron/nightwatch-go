@@ -92,6 +92,7 @@ Same names as the PHP package.
 | `NIGHTWATCH_IGNORE_QUERIES`, `_OUTGOING_REQUESTS`, `_CACHE_EVENTS`, `_MAIL`, `_NOTIFICATIONS` | `false` | Skip that record type (counters stay true) |
 | `NIGHTWATCH_LOG_LEVEL` | `LOG_LEVEL` or `debug` | Minimum log level sent |
 | `NIGHTWATCH_REDACT_HEADERS` | the six below | Extra header names to redact. Always redacted: Authorization, Cookie, Proxy-Authorization, Set-Cookie, X-CSRF-TOKEN, X-XSRF-TOKEN. Values become `[redacted]`, at capture time and again before send |
+| `NIGHTWATCH_REDACT_QUERY` | the defaults below | Extra query parameter names to redact. Always redacted (any case): password, password_confirmation, token, access_token, refresh_token, id_token, api_key, apikey, key, secret, client_secret, signature, code, auth |
 | `NIGHTWATCH_CAPTURE_REQUEST_PAYLOAD` | `false` | Keep the body of 500 responses (JSON, up to 64 KB, redacted before it leaves the middleware) |
 | `NIGHTWATCH_REDACT_PAYLOAD_FIELDS` | `_token,password,password_confirmation` | Fields blanked in a captured body, at any depth |
 | `NIGHTWATCH_CAPTURE_EXCEPTION_SOURCE_CODE` | `true` | Add the 5 lines around each frame for the first 10 application frames whose file can be read (never the standard library or `/pkg/mod/`); `null` otherwise |
@@ -160,6 +161,10 @@ cd example/goravel && go test -run TestExample .   # needs Redis (DB 15); starts
 
 - `NIGHTWATCH_REDACT_HEADERS` adds names to the always-redacted six; PHP replaces its list. Redacted values are
   `[redacted]`; PHP writes `[N bytes redacted]` and keeps the auth scheme and cookie names.
+- URL query secrets are redacted: values of password, token, access_token, api_key, signature, code and similar
+  parameters (see `NIGHTWATCH_REDACT_QUERY`) become `[redacted]` in the request `url` and in outgoing request
+  URLs, at capture time and again in the translator. The other parameters are kept and the query is re-encoded
+  with sorted keys; a query that cannot be parsed is dropped. PHP sends the full URL unredacted.
 - `NIGHTWATCH_INGEST_URL` (Go only) skips `POST /api/agent-auth`; the PHP package has no such setting.
 - `execution_stage` is always `action` for children (PHP names the middleware, render and other stages); the
   request's `bootstrap`, `render`, `sending` and `terminating` are 0 and `action` is the whole time.

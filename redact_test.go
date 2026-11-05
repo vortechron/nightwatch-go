@@ -3,6 +3,7 @@ package nightwatch
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -134,5 +135,118 @@ func TestTranslator_PayloadOnlyOn500WhenEnabledAndRedacted(t *testing.T) {
 	}
 	if reqs[1]["payload"] != `{"a":1,"password":"[redacted]"}` {
 		t.Fatalf("payload: %v", reqs[1]["payload"])
+	}
+}
+
+var defaultQueryRedact = []string{
+	"password", "password_confirmation", "token", "access_token", "refresh_token", "id_token", "api_key", "apikey",
+	"key", "secret", "client_secret", "signature", "code", "auth",
+}
+
+func TestRedactQuery(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"nothing to redact", "a=1&b=two", "a=1&b=two"},
+		{"token", "token=abc&page=2", "page=2&token=%5Bredacted%5D"},
+		{"mixed case names", "Access_Token=x&API_KEY=y&Password=z&SIGNATURE=s&Code=c", "API_KEY=%5Bredacted%5D&Access_Token=%5Bredacted%5D&Code=%5Bredacted%5D&Password=%5Bredacted%5D&SIGNATURE=%5Bredacted%5D"},
+		{
+			"every default name", "password=1&password_confirmation=1&token=1&access_token=1&refresh_token=1&id_token=1&api_key=1&apikey=1&key=1&secret=1&client_secret=1&signature=1&code=1&auth=1",
+			"access_token=%5Bredacted%5D&api_key=%5Bredacted%5D&apikey=%5Bredacted%5D&auth=%5Bredacted%5D&client_secret=%5Bredacted%5D&code=%5Bredacted%5D&id_token=%5Bredacted%5D&key=%5Bredacted%5D&password=%5Bredacted%5D&password_confirmation=%5Bredacted%5D&refresh_token=%5Bredacted%5D&secret=%5Bredacted%5D&signature=%5Bredacted%5D&token=%5Bredacted%5D",
+		},
+		{"repeated key", "token=a&token=b&x=1", "token=%5Bredacted%5D&token=%5Bredacted%5D&x=1"},
+		{"similar names are kept", "tokenizer=1&mykey=2", "mykey=2&tokenizer=1"},
+		{"key without value", "token&x", "token=%5Bredacted%5D&x="},
+		{"deterministic order", "b=2&a=1", "a=1&b=2"},
+		{"empty", "", ""},
+		{"unparseable query is dropped", "a=%zz&token=abc", ""},
+		{"bad escape only", "x=%", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RedactQuery(tt.in, defaultQueryRedact); got != tt.want {
+				t.Fatalf("got %q want %q", got, tt.want)
+			}
+		})
+	}
+	if got := RedactQuery("x_api=1&token=2", []string{"X_Api"}); got != "token=2&x_api=%5Bredacted%5D" {
+		t.Fatalf("extra names: %q", got)
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"plain", "https://example.com/a/b", "https://example.com/a/b"},
+		{"query kept when safe", "https://example.com/a?x=1", "https://example.com/a?x=1"},
+		{"token redacted", "https://example.com/reset?token=abc&email=a%40b.c", "https://example.com/reset?email=a%40b.c&token=%5Bredacted%5D"},
+		{"fragment dropped with the query", "https://example.com/a?x=1#frag", "https://example.com/a?x=1"},
+		{"unparseable query dropped", "https://example.com/a?token=%zz", "https://example.com/a"},
+		{"relative", "/x?api_key=1", "/x?api_key=%5Bredacted%5D"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RedactURL(tt.in, defaultQueryRedact); got != tt.want {
+				t.Fatalf("got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConfig_RedactQueryAddsToTheDefaults(t *testing.T) {
+	cfg := ConfigFromEnv(env(map[string]string{"NIGHTWATCH_TOKEN": "t", "NIGHTWATCH_REDACT_QUERY": "session, X_Pin"}), "h")
+	for _, name := range append([]string{"session", "X_Pin"}, defaultQueryRedact...) {
+		if !matches(name, cfg.RedactQuery) {
+			t.Errorf("%s missing from %v", name, cfg.RedactQuery)
+		}
+	}
+	if plain := ConfigFromEnv(env(map[string]string{"NIGHTWATCH_TOKEN": "t"}), "h"); len(plain.RedactQuery) != len(defaultQueryRedact) {
+		t.Fatalf("defaults: %v", plain.RedactQuery)
+	}
+}
+
+func TestTranslator_RequestUrlNeverCarriesSecretsInTheQuery(t *testing.T) {
+	cases := map[string][]attribute.KeyValue{
+		"built from path and query": {attribute.String(attrURLQuery, "token=abc&page=2")},
+		"url.full":                  {attribute.String("url.full", "http://h/api/tasks/7?access_token=abc&page=2")},
+		"unparseable query":         {attribute.String(attrURLQuery, "page=%zz&token=abc")},
+	}
+	want := map[string]string{
+		"built from path and query": "http://127.0.0.1:2601/api/tasks/7?page=2&token=%5Bredacted%5D",
+		"url.full":                  "http://h/api/tasks/7?access_token=%5Bredacted%5D&page=2",
+		"unparseable query":         "http://127.0.0.1:2601/api/tasks/7",
+	}
+	for name, attrs := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, nil)
+			h.request(context.Background(), 200, func(_ context.Context, span trace.Span) { span.SetAttributes(attrs...) })
+			got := h.sink.ofType("request")[0]["url"].(string)
+			if got != want[name] || strings.Contains(got, "abc") {
+				t.Fatalf("url %q want %q", got, want[name])
+			}
+		})
+	}
+}
+
+func TestTranslator_OutgoingUrlIsRedactedToo(t *testing.T) {
+	h := newHarness(t, nil)
+	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
+		_, out := h.tracer.Start(ctx, "GET", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
+			attribute.String("http.request.method", "GET"), attribute.String("url.full", "https://api.example.com/x?api_key=secret&q=1"),
+			attribute.String("server.address", "api.example.com")))
+		out.End()
+	})
+	got := h.sink.ofType("outgoing-request")[0]["url"].(string)
+	if got != "https://api.example.com/x?api_key=%5Bredacted%5D&q=1" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestHandBuiltConfigStillRedactsByDefault(t *testing.T) {
+	cfg := Config{}.withDefaults()
+	if !matches("token", cfg.RedactQuery) || !matches("Authorization", cfg.RedactHeaders) {
+		t.Fatalf("defaults missing: %v %v", cfg.RedactQuery, cfg.RedactHeaders)
 	}
 }

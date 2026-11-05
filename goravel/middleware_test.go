@@ -427,7 +427,34 @@ func TestFlusherAndFactories(t *testing.T) {
 	if exp, err := LogExporter(client)(context.Background()); err != nil || exp == nil {
 		t.Fatal("log exporter")
 	}
-	if originAttributes(httptest.NewRequestWithContext(context.Background(), "POST", "/a?x=1", strings.NewReader("hello"))) == nil {
+	if originAttributes(httptest.NewRequestWithContext(context.Background(), "POST", "/a?x=1", strings.NewReader("hello")), nil) == nil {
 		t.Fatal("origin attributes")
+	}
+}
+
+func TestOriginAttributes_QueryIsRedactedAtCaptureTime(t *testing.T) {
+	names := []string{"token", "api_key"}
+	value := func(target string) string {
+		req := httptest.NewRequestWithContext(context.Background(), "GET", target, nil)
+		for _, attr := range originAttributes(req, names) {
+			if attr.Key == "url.query" {
+				return attr.Value.AsString()
+			}
+		}
+
+		return "<none>"
+	}
+	tests := map[string]string{
+		"/a?page=2":                  "page=2",
+		"/a?token=abc&page=2":        "page=2&token=%5Bredacted%5D",
+		"/a?API_KEY=abc":             "API_KEY=%5Bredacted%5D",
+		"/a?page=2&api_key=x&b=%20c": "api_key=%5Bredacted%5D&b=+c&page=2",
+		"/a":                         "<none>",
+		"/a?token=%zz":               "<none>",
+	}
+	for target, want := range tests {
+		if got := value(target); got != want {
+			t.Errorf("%s: got %q want %q", target, got, want)
+		}
 	}
 }
