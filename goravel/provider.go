@@ -19,7 +19,11 @@ type ServiceProvider struct{}
 
 // Register selects the Nightwatch exporters for traces and logs.
 func (ServiceProvider) Register(app foundation.Application) {
-	if cfg := app.MakeConfig(); cfg != nil && Client().Enabled() {
+	if !Client().Enabled() {
+		return
+	}
+
+	if cfg := app.MakeConfig(); cfg != nil {
 		ConfigureTelemetry(cfg)
 	}
 }
