@@ -225,6 +225,10 @@ cd example/goravel && go test -run TestExample .   # needs Redis (DB 15); starts
 - Sampling is decided from the trace id, so a request and the jobs it queued agree; PHP rolls dice per execution.
 - Exceptions: each reported error counts, like PHP. The one skipped event is Goravel's own echo of an error this
   client already recorded with a stack (same span, same message, echo has no stack), once per original.
+- A request the client aborted (the browser left, or Inertia cancelled the visit) is still recorded, but its
+  `context canceled` errors are not sent as exceptions. Go cancels the request context when the client leaves, so
+  every query still running fails; PHP keeps running, so Laravel never reports these. Other errors of the same
+  request still count, and a cancel error in a request the client did not abort still counts.
 - A stack-less exception (for example one Goravel's middleware recorded) uses the span name as file and groups by
   class, span and message, so distinct errors do not collapse. Use `ReportError` for a real stack.
 - Exception `class` is the Go type (`*errors.errorString`); `*fmt.wrapError` is unwrapped; panics are class `panic`.

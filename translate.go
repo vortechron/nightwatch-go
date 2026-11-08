@@ -343,11 +343,11 @@ func (t *Translator) keep(traceID trace.TraceID, root sdktrace.ReadOnlySpan, kin
 		return true
 	}
 
-	return t.rerollForException(members)
+	return t.rerollForException(executionExceptions(root, members))
 }
 
-func (t *Translator) rerollForException(members []sdktrace.ReadOnlySpan) bool {
-	for _, found := range collectExceptions(members) {
+func (t *Translator) rerollForException(exceptions []exceptionInfo) bool {
+	for _, found := range exceptions {
 		if !found.handled && t.rand() <= t.cfg.ExceptionSampleRate {
 			return true
 		}

@@ -1,6 +1,7 @@
 package nightwatch
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"time"
@@ -62,6 +63,32 @@ func collectExceptions(spans []sdktrace.ReadOnlySpan) []exceptionInfo {
 	}
 
 	return found
+}
+
+// executionExceptions are the exceptions of one execution. In a request the
+// client aborted, the "context canceled" errors the abort caused are left out;
+// every other error still counts.
+func executionExceptions(root sdktrace.ReadOnlySpan, members []sdktrace.ReadOnlySpan) []exceptionInfo {
+	found := collectExceptions(members)
+	if !newAttrSet(root.Attributes()).bool(AttrAborted) {
+		return found
+	}
+
+	kept := make([]exceptionInfo, 0, len(found))
+	for _, info := range found {
+		if !isCancelMessage(info.message) {
+			kept = append(kept, info)
+		}
+	}
+
+	return kept
+}
+
+// isCancelMessage matches context.Canceled, alone or wrapped with %w.
+func isCancelMessage(message string) bool {
+	canceled := context.Canceled.Error()
+
+	return message == canceled || strings.HasSuffix(message, ": "+canceled)
 }
 
 func spanExceptions(span sdktrace.ReadOnlySpan) []exceptionInfo {

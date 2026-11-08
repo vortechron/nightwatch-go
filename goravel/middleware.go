@@ -2,6 +2,8 @@ package goravel
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -253,6 +255,12 @@ func (m *middleware) finish(ctx contractshttp.Context, span trace.Span, cfg nigh
 
 	if cfg.CaptureRequestPayload && body != "" && status == http.StatusInternalServerError {
 		span.SetAttributes(attribute.String(nightwatch.AttrPayload, body))
+	}
+
+	// The client went away: Go cancelled the request context, so what was
+	// still running failed with "context canceled". Not an application error.
+	if origin := ctx.Request().Origin(); origin != nil && errors.Is(origin.Context().Err(), context.Canceled) {
+		span.SetAttributes(attribute.Bool(nightwatch.AttrAborted, true))
 	}
 
 	// The user may have signed in during the request.

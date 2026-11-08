@@ -75,7 +75,7 @@ func (t *Translator) renderLateSpan(item work) []Record {
 // still applies: an orphan of an unsampled trace is only kept by the exception
 // re-roll, like an execution would be.
 func (t *Translator) renderOrphans(item work) []Record {
-	if !sampledBy(item.traceID, t.cfg.RequestSampleRate) && !t.rerollForException(item.spans) {
+	if !sampledBy(item.traceID, t.cfg.RequestSampleRate) && !t.rerollForException(collectExceptions(item.spans)) {
 		return nil
 	}
 
@@ -135,7 +135,7 @@ func (t *Translator) children(root sdktrace.ReadOnlySpan, x execInfo, members []
 		}
 	}
 
-	for _, found := range collectExceptions(members) {
+	for _, found := range executionExceptions(root, members) {
 		tally.exceptions++
 		records = append(records, sanitize(t.exceptionRecord(found, x)))
 	}

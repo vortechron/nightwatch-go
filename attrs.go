@@ -41,7 +41,13 @@ const (
 	AttrHeaders     = "nightwatch.request.headers"
 	// AttrIgnore on a root span drops the whole execution: no record, no
 	// children, no logs. The Goravel middleware sets it for ignored paths.
-	AttrIgnore       = "nightwatch.ignore"
+	AttrIgnore = "nightwatch.ignore"
+	// AttrAborted on a request span says the client went away before the
+	// response. Go then cancels the request context, so the queries and calls
+	// still running fail with "context canceled". Those errors are not sent as
+	// exceptions: PHP keeps running when the client leaves, so Laravel never
+	// reports them. The Goravel middleware sets it.
+	AttrAborted      = "nightwatch.request.aborted"
 	AttrPayload      = "nightwatch.request.payload"
 	AttrPeakMemory   = "nightwatch.peak_memory"
 	AttrStageBefore  = "nightwatch.stage.before_middleware"

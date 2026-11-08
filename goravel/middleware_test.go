@@ -461,3 +461,24 @@ func TestOriginAttributes_QueryIsRedactedAtCaptureTime(t *testing.T) {
 		}
 	}
 }
+
+func TestMiddleware_RequestTheClientAbortedSendsNoCancelErrors(t *testing.T) {
+	out := setup(t)
+	parent, cancel := context.WithCancel(context.Background())
+	ctx, span := rootSpan(parent)
+	m := newHTTPMocks(ctx, t, "GET", "", 200, func() {
+		// The browser goes away mid-request. Goravel's telemetry middleware then records ctx.Err() on the span.
+		cancel()
+		span.RecordError(context.Canceled)
+	})
+
+	Middleware(appWith(t, enabledClient(nil), "", errors.New("guest"))).Handle(m.ctx)
+	span.End()
+
+	if len(out.ofType("request")) != 1 {
+		t.Fatal("the request itself is still recorded")
+	}
+	if got := out.ofType("exception"); len(got) != 0 {
+		t.Fatalf("a request the client aborted is not an exception: %v", got)
+	}
+}
