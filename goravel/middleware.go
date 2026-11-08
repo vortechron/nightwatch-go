@@ -71,24 +71,16 @@ func routedPath(req contractshttp.ContextRequest) string {
 //
 //	telemetryhttp.Telemetry(telemetryhttp.WithFilter(nwgoravel.IgnoreFilter(facades.App)))
 //
-// It returns false for ignored paths, so Goravel starts no span at all for
-// them (static assets, favicons). It takes the same options as the middleware
-// and reads NIGHTWATCH_IGNORE_PATHS. A disabled client returns true: telemetry
-// keeps its own behaviour.
-func IgnoreFilter(getApp func() contractsfoundation.Application, options ...Option) func(contractshttp.Context) bool {
-	m := &middleware{app: getApp}
-	for _, option := range options {
-		option(m)
-	}
-
-	return func(ctx contractshttp.Context) bool {
-		client := m.client()
-		if client == nil || !client.Enabled() {
-			return true
-		}
-
-		return !m.ignored(client, ctx.Request())
-	}
+// It lets every request open a span, ignored paths too. An ignored request has
+// to be an execution that is dropped as a whole: the middleware marks its span
+// ignored, and the translator drops the queries, logs and exceptions under it.
+// Without a span, each query of an ignored request (an ingest door that reads
+// and writes the database) became a root of its own and reached Omni as a query
+// record with no execution. The filter still takes the same options as the
+// middleware, so existing wiring keeps compiling, and a disabled client returns
+// true as before.
+func IgnoreFilter(_ func() contractsfoundation.Application, _ ...Option) func(contractshttp.Context) bool {
+	return func(contractshttp.Context) bool { return true }
 }
 
 // Middleware enriches the span that Goravel's telemetry middleware opened

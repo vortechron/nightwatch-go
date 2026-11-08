@@ -5,7 +5,10 @@ import (
 	"errors"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	contractsfoundation "github.com/goravel/framework/contracts/foundation"
@@ -95,32 +98,14 @@ func contextFor(t *testing.T, target string) *mockshttp.Context {
 	return ctx
 }
 
-func TestIgnoreFilter_DecidesBeforeAnySpanIsStarted(t *testing.T) {
+func TestIgnoreFilter_LetsEveryRequestOpenASpan(t *testing.T) {
 	enabled := enabledClient(func(c *nightwatch.Config) { c.IgnorePaths = []string{"/build/**"} })
 	filter := IgnoreFilter(func() contractsfoundation.Application { return appWith(t, enabled, "", nil) }, WithIgnorePaths("/favicon.ico"))
 
-	for target, want := range map[string]bool{
-		"/build/app.js":     false,
-		"/build/app.js?v=2": false, // the query string is not part of the path
-		"/build/a/b/c.css":  false,
-		"/favicon.ico":      false,
-		"/favicon.ico?v=1":  false,
-		"/api/tasks/7":      true,
-		"/":                 true,
-		"/build":            true,
-		"/favicon.ico/":     true,
-	} {
-		if got := filter(contextFor(t, target)); got != want {
-			t.Errorf("trace(%q) = %v, want %v", target, got, want)
+	for _, target := range []string{"/build/app.js", "/favicon.ico", "/api/tasks/7", "/"} {
+		if !filter(contextFor(t, target)) {
+			t.Errorf("trace(%q) = false: an ignored request needs its span so the middleware can drop what runs inside it", target)
 		}
-	}
-
-	// A disabled client has no opinion: telemetry keeps its own behaviour.
-	off := IgnoreFilter(func() contractsfoundation.Application {
-		return appWith(t, nightwatch.New(nightwatch.Config{IgnorePaths: []string{"/build/**"}}), "", nil)
-	})
-	if !off(contextFor(t, "/build/app.js")) {
-		t.Fatal("disabled client: the filter must let everything through")
 	}
 }
 
@@ -129,8 +114,6 @@ func TestIgnoreFilter_DecidesBeforeAnySpanIsStarted(t *testing.T) {
 // are never ignored. The middleware and the filter must agree on all of them.
 func TestIgnore_CraftedPathsAreNotHidden(t *testing.T) {
 	client := enabledClient(func(c *nightwatch.Config) { c.IgnorePaths = []string{"/favicon.ico", "/build/**"} })
-	filter := IgnoreFilter(func() contractsfoundation.Application { return appWith(t, client, "", nil) })
-
 	tests := []struct {
 		target  string
 		ignored bool
@@ -152,10 +135,6 @@ func TestIgnore_CraftedPathsAreNotHidden(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.target, func(t *testing.T) {
-			if got := !filter(contextFor(t, tt.target)); got != tt.ignored {
-				t.Fatalf("filter ignored=%v, want %v", got, tt.ignored)
-			}
-
 			out := setup(t)
 			span := startRequestSpan(t)
 			m := newHTTPMocks(span.ctx, t, "GET", "", 200, func() {})
@@ -166,7 +145,7 @@ func TestIgnore_CraftedPathsAreNotHidden(t *testing.T) {
 			span.span.End()
 
 			if recorded := len(out.ofType("request")) == 1; recorded == tt.ignored {
-				t.Fatalf("middleware: ignored=%v but recorded=%v (the filter said ignored=%v)", tt.ignored, recorded, !filter(contextFor(t, tt.target)))
+				t.Fatalf("middleware: ignored=%v but recorded=%v", tt.ignored, recorded)
 			}
 		})
 	}
@@ -182,4 +161,57 @@ func startRequestSpan(t *testing.T) requestSpan {
 	ctx, span := rootSpan(context.Background())
 
 	return requestSpan{ctx: ctx, span: span}
+}
+
+// A query that runs inside an ignored request must vanish with it. With the
+// telemetry middleware filtered out, the request has no span, so the query's
+// span became a root of its own: Omni got a "query" record with an empty
+// execution for every ignored request. The filter must therefore let the
+// telemetry middleware open the request span; the nightwatch middleware then
+// marks it ignored and the translator drops everything under it.
+func TestIgnoredRequest_LeavesNoQueryRecordNotEvenAnOrphan(t *testing.T) {
+	out, translator := setupTranslator(t)
+	client := enabledClient(func(c *nightwatch.Config) { c.IgnorePaths = []string{"/api/omni/**"} })
+	app := appWith(t, client, "", nil)
+	filter := IgnoreFilter(func() contractsfoundation.Application { return app })
+	httpCtx := contextFor(t, "/api/omni/ingest")
+
+	// What Goravel's telemetry middleware does: no span when the filter says no.
+	ctx := context.Background()
+	var root trace.Span
+	if filter(httpCtx) {
+		ctx, root = rootSpan(ctx)
+	}
+	// What the application's database layer does inside the handler.
+	_, query := otel.Tracer("db").Start(ctx, "SELECT apps", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
+		attribute.String("db.system.name", "sqlite"),
+		attribute.String("db.query.text", "select * from apps where api_token = ?"),
+	))
+	query.End()
+	if root != nil {
+		Middleware(app).Handle(ignoredRequest(ctx, t, "/api/omni/ingest"))
+		root.End()
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	translator.Sweep()
+	translator.Drain()
+
+	if got := len(out.ofType("query")) + len(out.ofType("request")); got != 0 {
+		t.Fatalf("an ignored request left %d records: queries %v requests %v", got, out.ofType("query"), out.ofType("request"))
+	}
+}
+
+// ignoredRequest is a request context for path whose handler chain does nothing.
+func ignoredRequest(ctx context.Context, t *testing.T, path string) *mockshttp.Context {
+	t.Helper()
+	m := mockshttp.NewContext(t)
+	req := mockshttp.NewContextRequest(t)
+	m.EXPECT().Request().Return(req).Maybe()
+	m.EXPECT().Context().Return(ctx).Maybe()
+	m.EXPECT().WithContext(ctx).Maybe()
+	req.EXPECT().Origin().Return(httptest.NewRequestWithContext(ctx, "GET", path, nil)).Maybe()
+	req.EXPECT().Next().Maybe()
+
+	return m
 }

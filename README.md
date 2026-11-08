@@ -148,7 +148,10 @@ a late child (the counters on its execution then miss it). Records are built and
 - Nothing is cut or cleaned. A `?` or `#` in the path is a normal character: `/favicon.ico%3Fanything` decodes to
   `/favicon.ico?anything` and is not the favicon, so it is recorded. A path with a `.` or `..` segment or an empty
   segment (`//`) is never ignored, whatever the patterns say.
-- The middleware and `IgnoreFilter` use the same function, so they always agree.
+- An ignored request is still an execution, and it is dropped as a whole: its queries, cache events, outgoing
+  requests, logs, exceptions, mail and queued jobs leave no record. For that, `IgnoreFilter` lets every request
+  open its span (it used to return false for ignored paths). Without the span the queries of an ignored request
+  were roots of their own and reached Omni as query records with an empty execution.
 
 ## What never reaches Omni
 
@@ -191,6 +194,15 @@ and its children are sent together.
 `trace_id` is the OpenTelemetry trace id written as a UUID. `execution_id` is the trace id for requests, commands
 and scheduled tasks, and the attempt id for jobs. The trace travels into queued jobs as a W3C `traceparent` in
 a trailing job argument that the wrapped job removes before your `Handle` runs.
+
+## Changelog
+
+### Unreleased (after v0.2.4)
+
+- Fixed: queries run by an ignored request (for example an ingest door that uses the database) were sent as query
+  records with an empty `execution_id`. `IgnoreFilter` now returns true for every request, so the telemetry
+  middleware opens the span and the ignored execution is dropped with everything under it. Wiring that already uses
+  `IgnoreFilter` needs no change.
 
 ## Tools
 

@@ -50,6 +50,26 @@ func (s *sink) ofType(kind string) []nightwatch.Record {
 
 func setup(t *testing.T) *sink { return setupWith(t, nil) }
 
+// setupTranslator is setup that also returns the translator, with a short
+// TraceMaxWait so Sweep sends orphans at once.
+func setupTranslator(t *testing.T) (*sink, *nightwatch.Translator) {
+	t.Helper()
+	cfg := nightwatch.ConfigFromEnv(func(k string) string {
+		return map[string]string{"NIGHTWATCH_TOKEN": "t"}[k]
+	}, "host")
+	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg.RootGrace = 0
+	cfg.TraceMaxWait = time.Millisecond
+	out := &sink{}
+	tr := nightwatch.NewTranslator(cfg, out)
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(tr.SpanExporter()))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { otel.SetTracerProvider(previous); _ = tp.Shutdown(context.Background()) })
+
+	return out, tr
+}
+
 func setupWith(t *testing.T, mutate func(*nightwatch.Config)) *sink {
 	t.Helper()
 	cfg := nightwatch.ConfigFromEnv(func(k string) string {
