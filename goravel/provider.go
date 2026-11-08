@@ -131,7 +131,7 @@ func Wrap(app foundation.Application, client *nightwatch.Client) {
 	}
 
 	if schedule := app.MakeSchedule(); schedule != nil {
-		app.Instance(binding.Schedule, WrapSchedule(schedule, artisan))
+		app.Instance(binding.Schedule, WrapSchedule(schedule, artisan, IgnoreTasks(client.Config().IgnoreScheduledTasks...)))
 	}
 
 	if queue := app.MakeQueue(); queue != nil {

@@ -46,6 +46,7 @@ func TestConfigFromEnv_Overrides(t *testing.T) {
 		"NIGHTWATCH_IGNORE_NOTIFICATIONS":     "true",
 		"NIGHTWATCH_IGNORE_OUTGOING_REQUESTS": "true",
 		"LOG_LEVEL":                           "info",
+		"NIGHTWATCH_IGNORE_SCHEDULED_TASKS":   "omni:analytics:flush, other",
 		"NIGHTWATCH_REDACT_HEADERS":           "X-A, X-B",
 	}), "ignored")
 	if cfg.Enabled {
@@ -59,6 +60,9 @@ func TestConfigFromEnv_Overrides(t *testing.T) {
 	}
 	if !cfg.IgnoreQueries || !cfg.IgnoreMail || !cfg.IgnoreCacheEvents || !cfg.IgnoreNotifications || !cfg.IgnoreOutgoingRequests {
 		t.Fatalf("ignores %+v", cfg)
+	}
+	if len(cfg.IgnoreScheduledTasks) != 2 || cfg.IgnoreScheduledTasks[0] != "omni:analytics:flush" || cfg.IgnoreScheduledTasks[1] != "other" {
+		t.Fatalf("ignored tasks %v", cfg.IgnoreScheduledTasks)
 	}
 	if cfg.LogLevel != "info" {
 		t.Fatalf("level %q", cfg.LogLevel)

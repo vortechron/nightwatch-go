@@ -2,6 +2,11 @@ package goravel
 
 import (
 	"testing"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/goravel/framework/contracts/console"
 	"github.com/goravel/framework/contracts/schedule"
@@ -92,5 +97,57 @@ func TestSchedule_CommandEventWithoutArtisanIsLeftAlone(t *testing.T) {
 	WrapSchedule(inner, nil).Register([]schedule.Event{&fakeEvent{command: "x"}})
 	if inner.registered[0].GetCommand() != "x" || inner.registered[0].GetCallback() != nil {
 		t.Fatal("without artisan the event must run as before")
+	}
+}
+
+func TestSchedule_TaskContextGivesTheCallbackItsExecution(t *testing.T) {
+	out, translator := setupTranslator(t)
+	inner := &fakeSchedule{}
+	wrapped := WrapSchedule(inner, nil)
+	wrapped.Register([]schedule.Event{&fakeEvent{name: "purge", callback: func() {
+		_, span := otel.Tracer("db").Start(TaskContext(wrapped, "purge"), "SELECT jobs", trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(attribute.String("db.system.name", "sqlite"), attribute.String("db.query.text", "select 1")))
+		span.End()
+	}}})
+
+	inner.registered[0].GetCallback()()
+	time.Sleep(5 * time.Millisecond)
+	translator.Sweep()
+	translator.Drain()
+
+	tasks, queries := out.ofType("scheduled-task"), out.ofType("query")
+	if len(tasks) != 1 || len(queries) != 1 {
+		t.Fatalf("tasks %d queries %d, want 1 and 1", len(tasks), len(queries))
+	}
+	if queries[0]["execution_id"] == "" || queries[0]["execution_source"] != "schedule" {
+		t.Fatalf("the query does not belong to the task: %v", queries[0])
+	}
+	if TaskContext(wrapped, "purge") == nil || TaskContext(nil, "purge") == nil {
+		t.Fatal("TaskContext always returns a context")
+	}
+}
+
+func TestSchedule_AnIgnoredTaskLeavesNothingNotEvenItsQueries(t *testing.T) {
+	out, translator := setupTranslator(t)
+	inner := &fakeSchedule{}
+	wrapped := WrapSchedule(inner, nil, IgnoreTasks("flush"))
+	body := func(name string) func() {
+		return func() {
+			_, span := otel.Tracer("db").Start(TaskContext(wrapped, name), "SELECT "+name, trace.WithSpanKind(trace.SpanKindClient),
+				trace.WithAttributes(attribute.String("db.system.name", "sqlite"), attribute.String("db.query.text", "select 1")))
+			span.End()
+		}
+	}
+	wrapped.Register([]schedule.Event{&fakeEvent{name: "flush", callback: body("flush")}, &fakeEvent{name: "keep", callback: body("keep")}})
+
+	inner.registered[0].GetCallback()()
+	inner.registered[1].GetCallback()()
+	time.Sleep(5 * time.Millisecond)
+	translator.Sweep()
+	translator.Drain()
+
+	tasks, queries := out.ofType("scheduled-task"), out.ofType("query")
+	if len(tasks) != 1 || tasks[0]["name"] != "keep" || len(queries) != 1 {
+		t.Fatalf("want only the task that is not ignored and its query: tasks %v queries %v", tasks, queries)
 	}
 }

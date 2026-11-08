@@ -36,8 +36,8 @@ import nwgoravel "github.com/vortechron/nightwatch-go/goravel"
 &nwgoravel.NightwatchServiceProvider{}, // after the framework providers
 ```
 
-2. Add the HTTP middleware (Goravel's telemetry middleware first, ours second). The filter makes Goravel start no
-   span at all for ignored paths (static assets, favicons; see `NIGHTWATCH_IGNORE_PATHS`):
+2. Add the HTTP middleware (Goravel's telemetry middleware first, ours second). The filter lets every request open
+   its span, so an ignored path (see `NIGHTWATCH_IGNORE_PATHS`) is dropped as a whole execution:
 
 ```go
 WithMiddleware(func(m configuration.Middleware) {
@@ -111,6 +111,7 @@ Same names as the PHP package.
 | `NIGHTWATCH_SCHEDULED_TASK_SAMPLE_RATE` | `1.0` | Scheduled tasks |
 | `NIGHTWATCH_EXCEPTION_SAMPLE_RATE` | `1.0` | A dropped execution with an unhandled exception is kept with this chance |
 | `NIGHTWATCH_IGNORE_QUERIES`, `_OUTGOING_REQUESTS`, `_CACHE_EVENTS`, `_MAIL`, `_NOTIFICATIONS` | `false` | Skip that record type (counters stay true) |
+| `NIGHTWATCH_IGNORE_SCHEDULED_TASKS` | empty | Comma separated names of scheduled tasks that are not recorded: no task record and nothing that runs inside it. A scheduler callback has no context, so it must pass `nwgoravel.TaskContext(facades.Schedule(), name)` to the calls it makes, or they are records with no execution |
 | `NIGHTWATCH_IGNORE_PATHS` | empty | Comma separated request path globs that are not recorded at all: no request record, no queries, logs or exceptions of it, nothing in the counters. Example `/build/**,/favicon.ico`. See "Ignoring paths" below for the exact rules. Add more in code with `nwgoravel.WithIgnorePaths(...)` |
 | `NIGHTWATCH_LOG_LEVEL` | `LOG_LEVEL` or `debug` | Minimum log level sent |
 | `NIGHTWATCH_REDACT_HEADERS` | the six below | Extra header names to redact. Always redacted: Authorization, Cookie, Proxy-Authorization, Set-Cookie, X-CSRF-TOKEN, X-XSRF-TOKEN. Values become `[redacted]`, at capture time and again before send |
@@ -199,6 +200,9 @@ a trailing job argument that the wrapped job removes before your `Handle` runs.
 
 ### Unreleased (after v0.2.4)
 
+- Added: `NIGHTWATCH_IGNORE_SCHEDULED_TASKS` (and `nwgoravel.IgnoreTasks`) drops a whole scheduled task, and
+  `nwgoravel.TaskContext(schedule, name)` gives a scheduler callback the context of its run. Before, the queries of
+  a scheduled callback (which has no context parameter) were records with an empty execution.
 - Fixed: queries run by an ignored request (for example an ingest door that uses the database) were sent as query
   records with an empty `execution_id`. `IgnoreFilter` now returns true for every request, so the telemetry
   middleware opens the span and the ignored execution is dropped with everything under it. Wiring that already uses

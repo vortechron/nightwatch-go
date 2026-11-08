@@ -53,6 +53,9 @@ type Config struct {
 	// assets, health checks). Empty by default. See PathIgnored for the syntax:
 	// "*" stays in one path segment, "**" goes any depth ("/build/**").
 	IgnorePaths []string
+	// IgnoreScheduledTasks are names of scheduled tasks that are not recorded,
+	// with everything that runs inside them (NIGHTWATCH_IGNORE_SCHEDULED_TASKS).
+	IgnoreScheduledTasks []string
 	// RedactQuery lists query parameters whose values are replaced in URLs.
 	// It always includes the defaults; NIGHTWATCH_REDACT_QUERY adds names.
 	RedactQuery []string
@@ -116,6 +119,7 @@ func ConfigFromEnv(getenv func(string) string, hostname string) Config {
 		RedactHeaders:              mergeRedactNames(splitList(getenv("NIGHTWATCH_REDACT_HEADERS"), nil)),
 		RedactQuery:                mergeNames(defaultRedactQuery, splitList(getenv("NIGHTWATCH_REDACT_QUERY"), nil)),
 		IgnorePaths:                splitList(getenv("NIGHTWATCH_IGNORE_PATHS"), nil),
+		IgnoreScheduledTasks:       splitList(getenv("NIGHTWATCH_IGNORE_SCHEDULED_TASKS"), nil),
 		CaptureRequestPayload:      truthy(getenv("NIGHTWATCH_CAPTURE_REQUEST_PAYLOAD")),
 		CaptureExceptionSourceCode: enabledByDefault(getenv("NIGHTWATCH_CAPTURE_EXCEPTION_SOURCE_CODE")),
 		RedactPayloadFields:        splitList(getenv("NIGHTWATCH_REDACT_PAYLOAD_FIELDS"), defaultRedactPayloadFields),
