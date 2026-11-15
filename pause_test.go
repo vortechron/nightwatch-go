@@ -144,3 +144,91 @@ func TestPause_AWorkerThatRecordsEverySpanStillDropsAnUnsampledJob(t *testing.T)
 		t.Fatalf("a job whose dispatcher was not sampled must not be recorded: %v", got)
 	}
 }
+
+func TestPause_ManyIgnoreCallsDoNotPushOutRealRecords(t *testing.T) {
+	h := newHarness(t, nil)
+	useHarness(t, h)
+
+	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
+		ctx = MarkActive(ctx)
+		for range 3_000 {
+			Ignore(ctx, func(ctx context.Context) {
+				_, query := h.tracer.Start(ctx, "SELECT", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
+					attribute.String("db.query.text", "select 'ignored'")))
+				query.End()
+			})
+		}
+		Ignore(ctx, func(ctx context.Context) {
+			h.log(ctx, otellog.SeverityWarn, "a log inside Ignore is still kept")
+		})
+		h.query(ctx, "select 'kept'")
+	})
+
+	if queries := h.sink.ofType(RecordQuery); len(queries) != 1 || queries[0]["sql"] != "select 'kept'" {
+		t.Fatalf("like Laravel, ignored work costs nothing; queries = %d", len(queries))
+	}
+
+	if logs := h.sink.ofType(RecordLog); len(logs) != 1 {
+		t.Fatalf("logs = %v", logs)
+	}
+
+	if dropped := h.tr.Stats().SpansDropped; dropped != 0 {
+		t.Fatalf("%d spans dropped by the per-trace limit", dropped)
+	}
+}
+
+func TestPause_NestedWorkLogsExceptionsAndLateChildrenUnderIgnoreBehaveAsBefore(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.RootGrace = time.Second })
+	useHarness(t, h)
+	now := time.Now()
+	h.tr.now = func() time.Time { return now }
+
+	var late trace.Span
+	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
+		ctx = MarkActive(ctx)
+		Ignore(ctx, func(ctx context.Context) {
+			work, span := h.tracer.Start(ctx, "work")
+			h.query(work, "select 'nested and ignored'") // ends before its parent
+			_, late = h.tracer.Start(work, "SELECT", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
+				attribute.String("db.query.text", "select 'late and ignored'")))
+			span.End()
+			h.log(work, otellog.SeverityWarn, "logged under ignored work")
+			h.failedQuery(ctx, "ignored query failed")
+		})
+	})
+	now = now.Add(2 * time.Second)
+	h.tr.Sweep()
+	late.End()
+	h.tr.Drain()
+
+	for _, record := range h.sink.all() {
+		if sql, _ := record["sql"].(string); strings.Contains(sql, "ignored") {
+			t.Fatalf("ignored query sent: %v", record)
+		}
+	}
+
+	request := h.sink.ofType(RecordRequest)[0]
+	if request["logs"] != 1 || request["exceptions"] != 1 || len(h.sink.ofType(RecordLog)) != 1 || len(h.sink.ofType(RecordException)) != 1 {
+		t.Fatalf("logs and exceptions under Ignore are still recorded: %v", request)
+	}
+
+	if h.tr.Stats().LateChildren != 0 {
+		t.Fatalf("a late child of ignored work is left out quietly: %+v", h.tr.Stats())
+	}
+}
+
+func TestPause_OneMarkerPerExecution(t *testing.T) {
+	h := newHarness(t, nil)
+	useHarness(t, h)
+
+	var first, second trace.SpanContext
+	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
+		ctx = MarkActive(ctx)
+		first = trace.SpanContextFromContext(Pause(ctx))
+		second = trace.SpanContextFromContext(Pause(ctx))
+	})
+
+	if !first.IsValid() || !first.Equal(second) {
+		t.Fatalf("every Pause of one execution must reuse its marker: %v, %v", first.SpanID(), second.SpanID())
+	}
+}

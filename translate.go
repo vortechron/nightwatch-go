@@ -68,6 +68,9 @@ type traceBuf struct {
 	spans map[trace.SpanID]sdktrace.ReadOnlySpan
 	logs  []sdklog.Record
 	since time.Time
+	// paused maps the id of a paused span that was left out as it arrived
+	// (dropPaused) to its Pause marker.
+	paused map[trace.SpanID]trace.SpanID
 }
 
 // ownerRef remembers which execution an already-finished span belonged to, so
@@ -88,6 +91,8 @@ type pendingExec struct {
 	logs    []sdklog.Record
 	request *preparedRequest
 	due     time.Time
+	// paused are the members under a Pause marker, which are not sent.
+	paused map[trace.SpanID]bool
 }
 
 // NewTranslator creates a translator that writes finished records to sink.
@@ -156,6 +161,10 @@ func (t *Translator) addSpan(span sdktrace.ReadOnlySpan, prepared *preparedReque
 	}
 
 	buf, evicted := t.buffer(sc.TraceID())
+
+	if kind == "" && t.dropPaused(buf, span) {
+		return evicted
+	}
 
 	if kind == "" && len(buf.spans) >= t.cfg.MaxSpansPerTrace {
 		t.spansDropped.Add(1)
@@ -242,6 +251,12 @@ func (t *Translator) resolve(buf *traceBuf, id trace.SpanID) (ownerRef, trace.Sp
 		}
 
 		span, ok := buf.spans[id]
+		if marker, dropped := buf.paused[id]; !ok && dropped {
+			id = marker
+
+			continue
+		}
+
 		if !ok {
 			return ownerRef{}, trace.SpanID{}, false
 		}
@@ -276,7 +291,8 @@ func (t *Translator) finishRoot(traceID trace.TraceID, buf *traceBuf, root sdktr
 	}
 
 	expires := t.now().Add(2*t.cfg.TraceMaxWait + t.cfg.RootGrace)
-	paused := pausedSpans(members)
+	dropped := takeDropped(buf, members)
+	paused := pausedSpans(members, dropped)
 
 	for _, member := range members {
 		id := member.SpanContext().SpanID()
@@ -284,10 +300,16 @@ func (t *Translator) finishRoot(traceID trace.TraceID, buf *traceBuf, root sdktr
 		delete(buf.spans, id)
 	}
 
+	for id := range dropped {
+		t.owners[id] = ownerRef{info: info, expires: expires, paused: true}
+	}
+
 	t.trimOwners()
 	t.dropIfEmpty(traceID, buf)
 
-	exec := &pendingExec{root: root, info: info, members: members, logs: logs, request: prepared, due: t.now().Add(t.cfg.RootGrace)}
+	exec := &pendingExec{
+		root: root, info: info, members: members, logs: logs, request: prepared, due: t.now().Add(t.cfg.RootGrace), paused: paused,
+	}
 	if t.cfg.RootGrace <= 0 {
 		return []work{{kind: workExec, exec: exec}}
 	}
@@ -298,7 +320,7 @@ func (t *Translator) finishRoot(traceID trace.TraceID, buf *traceBuf, root sdktr
 }
 
 func (t *Translator) dropIfEmpty(id trace.TraceID, buf *traceBuf) {
-	if len(buf.spans) == 0 && len(buf.logs) == 0 {
+	if len(buf.spans) == 0 && len(buf.logs) == 0 && len(buf.paused) == 0 {
 		delete(t.traces, id)
 	}
 }
@@ -383,6 +405,14 @@ func (t *Translator) lateSpan(traceID trace.TraceID, span sdktrace.ReadOnlySpan,
 
 	if exec, waiting := t.pending[owner.info.root]; waiting {
 		exec.members = append(exec.members, span)
+
+		if owner.paused {
+			if exec.paused == nil {
+				exec.paused = map[trace.SpanID]bool{}
+			}
+
+			exec.paused[span.SpanContext().SpanID()] = true
+		}
 
 		return nil
 	}

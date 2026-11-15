@@ -104,7 +104,7 @@ func (t *Translator) renderOrphans(item work) []Record {
 // assemble builds the execution record and every child record.
 func (t *Translator) assemble(exec *pendingExec, x execInfo) []Record {
 	root, members := exec.root, exec.members
-	children, tally := t.children(root, x, members, exec.logs)
+	children, tally := t.children(root, x, members, exec.logs, exec.paused)
 
 	preview := ""
 	for _, record := range children {
@@ -127,12 +127,13 @@ func (t *Translator) assemble(exec *pendingExec, x execInfo) []Record {
 
 // children builds the child records and counts them. Ignored types are
 // neither sent nor counted, so counters always match what Omni receives.
-func (t *Translator) children(root sdktrace.ReadOnlySpan, x execInfo, members []sdktrace.ReadOnlySpan, logs []sdklog.Record) ([]Record, counters) {
+func (t *Translator) children(
+	root sdktrace.ReadOnlySpan, x execInfo, members []sdktrace.ReadOnlySpan, logs []sdklog.Record, paused map[trace.SpanID]bool,
+) ([]Record, counters) {
 	var tally counters
 	var records []Record
 
 	rootID := root.SpanContext().SpanID()
-	paused := pausedSpans(members)
 
 	for _, span := range members {
 		if id := span.SpanContext().SpanID(); id == rootID || paused[id] {

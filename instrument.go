@@ -36,6 +36,8 @@ type execution struct {
 	mu sync.Mutex
 	// context is what AddContext added (held under mu).
 	context contextData
+	// marker is the Pause marker span, started at the first Pause (under mu).
+	marker trace.Span
 }
 
 // MarkActive returns a context that says "this runs inside a Nightwatch
