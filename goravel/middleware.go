@@ -171,6 +171,24 @@ func requestAttributes(req contractshttp.ContextRequest, redactHeaders, redactQu
 		attrs = append(attrs, originAttributes(origin, redactQuery)...)
 	}
 
+	return append(attrs, routeAttributes(req.Info())...)
+}
+
+// routeAttributes are the route name and the handler, Laravel's route_name and
+// route_action. A Go method value is named "pkg.(*T).Method-fm"; the "-fm" is
+// cut. They are set before the handlers run, so a handler that sets
+// nightwatch.route.* itself still wins. An unmatched route has neither.
+func routeAttributes(info contractshttp.Info) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+
+	if info.Name != "" {
+		attrs = append(attrs, attribute.String(nightwatch.AttrRouteName, info.Name))
+	}
+
+	if info.Handler != "" {
+		attrs = append(attrs, attribute.String(nightwatch.AttrRouteAction, strings.TrimSuffix(info.Handler, "-fm")))
+	}
+
 	return attrs
 }
 

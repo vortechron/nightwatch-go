@@ -60,6 +60,7 @@ func newHTTPMocks(ctx context.Context, t *testing.T, method, body string, status
 	m.req.EXPECT().Headers().Return(origin.Header).Maybe()
 	m.req.EXPECT().Origin().Return(origin).Maybe()
 	m.req.EXPECT().Next().Run(func() { next() }).Maybe()
+	m.req.EXPECT().Info().Return(contractshttp.Info{}).Maybe()
 	m.resp.EXPECT().Origin().Return(m.orig).Maybe()
 	m.orig.EXPECT().Size().Return(42).Maybe()
 	m.orig.EXPECT().Status().Return(status).Maybe()
