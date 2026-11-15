@@ -72,3 +72,21 @@ func (a attrSet) bool(key string) bool {
 
 	return truthy(value.String())
 }
+
+// float reads a number attribute; set is false when it is missing or not a
+// number.
+func (a attrSet) float(key string) (value float64, set bool) {
+	raw, ok := a[attribute.Key(key)]
+	if !ok {
+		return 0, false
+	}
+
+	switch raw.Type() {
+	case attribute.FLOAT64:
+		return raw.AsFloat64(), true
+	case attribute.INT64:
+		return float64(raw.AsInt64()), true
+	default:
+		return 0, false
+	}
+}

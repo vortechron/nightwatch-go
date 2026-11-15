@@ -23,20 +23,33 @@ func tracer() trace.Tracer {
 
 type activeKey struct{}
 
+// execution is what MarkActive remembers about the execution of a context:
+// its root span, so Sample can reach it from any child context.
+type execution struct {
+	root trace.Span
+}
+
 // MarkActive returns a context that says "this runs inside a Nightwatch
 // execution" (a request, command, job attempt or scheduled task). Wrappers of
 // context-less APIs (queue dispatch, mail, cache, HTTP client) only trace when
 // the context is active; otherwise they are pure pass-through. That is how a
 // disabled client costs nothing: nothing ever marks a context.
+//
+// The span in ctx is taken as the root of the execution: Sample and
+// DontSample change that span.
 func MarkActive(ctx context.Context) context.Context {
-	return context.WithValue(ctx, activeKey{}, true)
+	return context.WithValue(ctx, activeKey{}, &execution{root: trace.SpanFromContext(ctx)})
 }
 
 // Active reports whether ctx belongs to a Nightwatch execution.
 func Active(ctx context.Context) bool {
-	active, _ := ctx.Value(activeKey{}).(bool)
+	return executionOf(ctx) != nil
+}
 
-	return active
+func executionOf(ctx context.Context) *execution {
+	exec, _ := ctx.Value(activeKey{}).(*execution)
+
+	return exec
 }
 
 // EndFunc ends a span. A non-nil error marks the span failed and records it

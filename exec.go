@@ -119,6 +119,10 @@ func sampledBy(traceID trace.TraceID, rate float64) bool {
 }
 
 func (t *Translator) rateFor(root sdktrace.ReadOnlySpan, kind string) float64 {
+	if rate, set := newAttrSet(root.Attributes()).float(AttrSampleRate); set {
+		return rate
+	}
+
 	switch kind {
 	case RecordCommand:
 		return t.cfg.CommandSampleRate
