@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/spf13/cast"
+	"go.opentelemetry.io/otel"
 
 	"github.com/goravel/framework/contracts/binding"
 	"github.com/goravel/framework/contracts/config"
@@ -87,6 +88,7 @@ func (NightwatchServiceProvider) Boot(app foundation.Application) {
 	}
 
 	client.Start()
+	RecordQueryLocations(otel.GetTracerProvider())
 	Wrap(app, client)
 }
 
