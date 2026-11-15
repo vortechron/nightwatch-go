@@ -170,7 +170,7 @@ The Laravel Nightwatch API for these lives on the client (`nwgoravel.ClientFrom(
   `SampleAlways()`, `SampleNever()`, `client.SampleScheduledTask(name, rate)`, and Laravel's vendor command rule
   (`CaptureDefaultVendorCommands(false)`, off by default so upgrading changes nothing).
 - Inline filtering: `nightwatch.Ignore(ctx, fn)`, `ctx = nightwatch.Pause(ctx)`, `ctx = nightwatch.Resume(ctx)`. Jobs
-  queued from a paused or sampled-out execution are not sampled in the worker either.
+  queued from a paused or sampled-out execution have a sample rate of 0 in the worker: kept only when they fail.
 - Context: `nightwatch.AddContext(ctx, key, value)` fills the `context` column of the execution.
 - Rate limiting: `client.OnIngesting(func(nightwatch.IngestingEvents) bool)` can refuse a batch before it is sent.
 - `client.HandleUnrecoverableErrorsUsing(fn)` gets panicking callbacks and every dropped batch (`ErrBatchDropped`).
@@ -227,11 +227,18 @@ a trailing job argument that the wrapped job removes before your `Handle` runs.
   `RedactExceptions`), `RejectCacheKeys`, and Laravel's vendor command and cache key lists (opt-in).
 - Added: `Sample`, `DontSample`, the `nwgoravel.Sample` route middleware and `SampleScheduledTask`.
 - Added: `Ignore`, `Pause`, `Resume` and `Paused`. A job queued from a paused or sampled-out context carries an
-  unsampled traceparent, and a job attempt with an unsampled parent is not sampled.
-- Added: `AddContext`; execution records now carry it in `context` (an empty object before).
+  unsampled traceparent; its attempt has a sample rate of 0 and is sampled again at the exception rate when it fails,
+  as in Laravel, also under a parent-based sampler. An execution has one pause marker, and ignored spans are dropped
+  as they arrive, so they never fill the trace's span limit.
+- Added: `AddContext`; execution records now carry it in `context` (an empty object before). The context is one span
+  attribute (`nightwatch.AttrContext`), so many keys never push out the status code, and trimming is linear.
 - Added: `OnIngesting`, `Stats().Refused`, `HandleUnrecoverableErrorsUsing` and `ErrBatchDropped`.
 - Added: query `file` and `line` (`QueryCallerProcessor`, `nwgoravel.RecordQueryLocations`), and `route_name` and
-  `route_action` from Goravel's route info. Both were empty before.
+  `route_action` from Goravel's route info. Both were empty before. The application is found by the main module in the
+  build information, so builds in `/go/src/app` and with `-trimpath` work; a `replace`d module counts as a dependency.
+  The stack is not read when queries are ignored or paused.
+- Changed: exception source lines follow the same main module rule.
+- Fixed: `OnIngesting` listeners get a deep copy (`route_methods` was shared).
 - Fixed: docs said a skipped record type was still counted; it is not, as in Laravel. Doc comments of `Frame.Code`
   and `PathIgnored` corrected.
 

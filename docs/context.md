@@ -46,6 +46,7 @@ nightwatch.AddContext(ctx, "tenant", map[string]any{
 ## How values are stored
 
 - A value is stored as JSON. A later `AddContext` with the same key replaces the value, as `Context::add` does.
+- Add as many keys as you need. The whole context is one span attribute, so it never pushes the status code or the sample rate past OpenTelemetry's limit of 128 attributes a span.
 - A value that cannot be encoded (a channel, a function) turns the whole context into `{"_nightwatch_error":"Failed to serialize context"}`, Laravel's own error object.
 - A key that looks secret (it contains password, secret, token, authorization, cookie, api_key, credential or session, or is in one of the redact lists) has its value replaced with `[redacted]`, at any depth.
 

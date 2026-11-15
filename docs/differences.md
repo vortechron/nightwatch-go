@@ -37,7 +37,8 @@
 - **Exception classes** are Go types, such as `*errors.errorString`. A panic has the class `panic`.
 - **Job attempts** are counted per job id in one worker, because Goravel does not pass the attempt number to `Handle` (the worker keeps it in a local variable).
 - **Mail `mailer`** is `smtp` unless you pass a name, because Goravel's mailer has only that transport.
-- **Query file and line** are absolute paths, like the exception frames. Laravel makes them relative to the app's base path.
+- **Query file and line** are the paths the build recorded, like the exception frames: absolute, or module relative with `-trimpath`. Laravel makes them relative to the app's base path.
+- **Ignored work is still traced.** OpenTelemetry still starts the spans under `Ignore` or `Pause`; the client drops them as they arrive, so they cost a little CPU but never count against the span limit. Laravel's `ignore` records nothing at all.
 - **`route_action`** is the Go handler function, such as `goravel/app/http/controllers.(*TaskController).Show`, not `Controller@method`.
 - **Scheduler callbacks** have no context. Use `nwgoravel.TaskContext` inside them.
 - **Goravel's own HTTP client** ends its span only when the response body is read or closed. A call whose body you never read is not recorded. See [Outgoing Requests](outgoing-requests#goravels-http-client).

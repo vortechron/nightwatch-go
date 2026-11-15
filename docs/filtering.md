@@ -128,7 +128,7 @@ NIGHTWATCH_IGNORE_NOTIFICATIONS=true
 
 ### Inline filtering
 
-`nightwatch.Ignore(ctx, fn)` runs `fn` with a paused context, like `Nightwatch::ignore()`. The queries, cache events, outgoing requests, mail, notifications and queued jobs started from that context are not recorded, and the attempts of a job queued from it are not sampled. Logs and exceptions are still recorded, as in Laravel.
+`nightwatch.Ignore(ctx, fn)` runs `fn` with a paused context, like `Nightwatch::ignore()`. The queries, cache events, outgoing requests, mail, notifications and queued jobs started from that context are not recorded, and a job queued from it has a sample rate of 0 in the worker, so only a failed attempt is kept (see [Jobs](jobs#sampling)). Logs and exceptions are still recorded, as in Laravel.
 
 ```go
 var users []User
@@ -147,6 +147,8 @@ _ = facades.Orm().WithContext(paused).Query().Find(&users)
 
 ctx = nightwatch.Resume(paused)
 ```
+
+Ignored work does not use up a trace's span limit (`MaxSpansPerTrace`, 2,000). An execution has one pause marker, however often you call `Ignore` or `Pause`, and the client drops the spans under it as they arrive, so they never push real records out. A paused query's file and line are not read either.
 
 ### Ignoring paths
 
@@ -218,7 +220,7 @@ client.OnIngesting(func(event nightwatch.IngestingEvents) bool {
 > [!NOTE]
 > The cache calls the listener makes are not recorded: it runs in the sender, outside any execution.
 
-The listener gets a copy of the records: changing them changes nothing that is sent. A listener that panics drops the batch, and the panic goes to the [unrecoverable error handler](exceptions#unrecoverable-errors).
+The listener gets a deep copy of the records, lists included: changing them changes nothing that is sent. A listener that panics drops the batch, and the panic goes to the [unrecoverable error handler](exceptions#unrecoverable-errors).
 
 ## What never reaches Omni
 

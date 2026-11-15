@@ -66,7 +66,7 @@ The attempt number is counted per job id in one worker, because Goravel passes i
 
 There is no rate of its own for jobs: a job is captured when the execution that queued it is captured. A job queued by a request follows the request's sampling decision. A job that no request started follows `NIGHTWATCH_COMMAND_SAMPLE_RATE`.
 
-A job queued from a paused context (see [Inline filtering](filtering#inline-filtering)), or from an execution that `nightwatch.Sample` or `nightwatch.DontSample` dropped, carries an unsampled `traceparent`, so its attempts are not sampled in the worker either.
+A job queued from a paused context (see [Inline filtering](filtering#inline-filtering)), or from an execution that `nightwatch.Sample` or `nightwatch.DontSample` dropped, carries an unsampled `traceparent`. As in Laravel, its attempts then have a sample rate of 0 in the worker: an attempt that succeeds is dropped, and one that fails is sampled again with `NIGHTWATCH_EXCEPTION_SAMPLE_RATE` (default `1.0`), so the failure and its exception reach Omni. This works under Goravel's default parent-based sampler too: the attempt is recorded, and the rate decides at the end. A `nightwatch.Sample` call inside the job still wins, and jobs it queues stay sampled out.
 
 ### Sampling specific jobs
 

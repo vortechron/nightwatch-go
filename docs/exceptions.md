@@ -35,7 +35,7 @@ Each reported error counts once. The one event skipped is Goravel's own echo of 
 
 ## Source code capture
 
-For the first ten application frames whose file can be read, the record holds the source lines around the frame, five on each side. Frames from the standard library or from `/pkg/mod/` get none. To turn this off:
+For the first ten application frames whose file can be read, the record holds the source lines around the frame, five on each side. An application frame is a function of your program's main module, as for [query locations](queries#file-and-line). Frames from the standard library or from dependencies get none, and neither does a `-trimpath` build, whose paths are not files on disk. To turn this off:
 
 ```ini
 NIGHTWATCH_CAPTURE_EXCEPTION_SOURCE_CODE=false
