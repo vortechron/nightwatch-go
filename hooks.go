@@ -50,6 +50,8 @@ type hookSet struct {
 
 	redactRequests []func(*Request)
 
+	ingesting []func(IngestingEvents) bool
+
 	unrecoverable func(error)
 }
 

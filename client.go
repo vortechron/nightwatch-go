@@ -33,6 +33,8 @@ type Stats struct {
 	// shutdown.
 	Pending int
 	Dropped int64
+	// Refused records were turned away by an OnIngesting listener.
+	Refused int64
 	// Translator holds the bounded-memory counters (evicted traces, dropped
 	// spans, late children).
 	Translator TranslatorStats
@@ -44,6 +46,7 @@ func New(cfg Config) *Client {
 	sender := NewSender(cfg)
 
 	translator := NewTranslator(cfg, sender)
+	sender.hooks = translator.Hooks
 
 	return &Client{
 		Hooks:      translator.Hooks,
@@ -112,7 +115,9 @@ func (c *Client) Translator() *Translator { return c.translator }
 
 // Stats returns the sender counters.
 func (c *Client) Stats() Stats {
-	return Stats{Pending: c.sender.Pending(), Dropped: c.sender.Dropped(), Translator: c.translator.Stats()}
+	return Stats{
+		Pending: c.sender.Pending(), Dropped: c.sender.Dropped(), Refused: c.sender.Refused(), Translator: c.translator.Stats(),
+	}
 }
 
 // Flush moves everything the translator still holds to the sender and sends

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -35,6 +36,7 @@ type Sender struct {
 	cfg    Config
 	client *http.Client
 	log    *slog.Logger
+	hooks  *Hooks
 	sleep  func(ctx context.Context, d time.Duration) error
 	// afterFailedAttempt is a test hook called after each failed attempt of a
 	// batch, before the retry decision. Nil in production.
@@ -48,6 +50,7 @@ type Sender struct {
 	stopping    bool
 
 	dropped atomic.Int64
+	refused atomic.Int64
 	wake    chan struct{}
 	stop    chan struct{}
 	done    chan struct{}
@@ -75,6 +78,7 @@ func NewSender(cfg Config) *Sender {
 		cfg:    cfg,
 		client: client,
 		log:    logger,
+		hooks:  newHooks(),
 		nowFn:  time.Now,
 		ring:   newRing(cfg.MaxBuffered),
 		wake:   make(chan struct{}, 1),
@@ -155,6 +159,12 @@ func (s *Sender) Pending() int {
 // Dropped counts records lost to a full buffer, a quota pause or a rejected
 // batch.
 func (s *Sender) Dropped() int64 { return s.dropped.Load() }
+
+// Refused is how many records an OnIngesting listener refused.
+func (s *Sender) Refused() int64 { return s.refused.Load() }
+
+// report hands an error to the unrecoverable handler.
+func (s *Sender) report(err error) { s.hooks.load().unrecoverableError(err) }
 
 func (s *Sender) loop() {
 	defer close(s.done)
@@ -285,11 +295,8 @@ func (s *Sender) deliver(ctx context.Context, batch []Record) {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
 
-	body, err := encodeBatch(batch)
-	if err != nil {
-		s.log.Error("nightwatch: cannot encode batch", "error", err, "records", len(batch))
-		s.dropped.Add(int64(len(batch)))
-
+	body, ok := s.encode(batch)
+	if !ok {
 		return
 	}
 
@@ -333,6 +340,27 @@ func (s *Sender) deliver(ctx context.Context, batch []Record) {
 	}
 }
 
+// encode runs the OnIngesting listeners and compresses the batch. It reports
+// false, with the batch counted as refused or dropped, when it is not sent.
+func (s *Sender) encode(batch []Record) ([]byte, bool) {
+	if !s.hooks.load().ingestAllowed(batch) {
+		s.refused.Add(int64(len(batch)))
+
+		return nil, false
+	}
+
+	body, err := encodeBatch(batch)
+	if err != nil {
+		s.log.Error("nightwatch: cannot encode batch", "error", err, "records", len(batch))
+		s.dropped.Add(int64(len(batch)))
+		s.report(fmt.Errorf("%w: %d records, cannot encode: %w", ErrBatchDropped, len(batch), err))
+
+		return nil, false
+	}
+
+	return body, true
+}
+
 // finished handles every outcome except "retry" and reports whether the batch
 // is done.
 func (s *Sender) finished(result postResult, records int) bool {
@@ -367,6 +395,7 @@ func (s *Sender) finalAttempt(ctx context.Context, body []byte, key string, reco
 func (s *Sender) giveUp(records int, reason string) {
 	s.dropped.Add(int64(records))
 	s.log.Warn("nightwatch: dropping a batch", "records", records, "reason", reason)
+	s.report(fmt.Errorf("%w: %d records, %s", ErrBatchDropped, records, reason))
 }
 
 // waitFor is the backoff for an attempt, but never less than Retry-After.
@@ -383,6 +412,7 @@ func (s *Sender) pause(batchSize int) {
 	s.pausedUntil = s.nowFn().Add(quotaPause)
 	s.dropped.Add(int64(lost))
 	s.log.Warn("nightwatch: Omni event limit reached, pausing for 15 minutes", "dropped", lost)
+	s.report(fmt.Errorf("%w: %d records, Omni event limit reached (402), pausing for 15 minutes", ErrBatchDropped, lost))
 }
 
 // postResult is the outcome of one POST and the server's Retry-After.
@@ -397,6 +427,7 @@ func (s *Sender) post(ctx context.Context, body []byte, key string, records int)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.url, bytes.NewReader(body))
 	if err != nil {
 		s.log.Error("nightwatch: bad ingest url", "error", err)
+		s.report(fmt.Errorf("%w: %d records, bad ingest url: %w", ErrBatchDropped, records, err))
 
 		return postResult{outcome: outcomeDrop}
 	}
@@ -433,6 +464,7 @@ func (s *Sender) classify(resp *http.Response, records int) outcome {
 		return outcomeRetry
 	default:
 		s.log.Warn("nightwatch: Omni rejected a batch, dropping it", "status", code, "records", records, "body", string(snippet))
+		s.report(fmt.Errorf("%w: %d records, Omni answered %d", ErrBatchDropped, records, code))
 
 		return outcomeDrop
 	}
