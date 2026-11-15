@@ -117,7 +117,7 @@ func (t *Translator) requestRecord(root sdktrace.ReadOnlySpan, x execInfo, c cou
 	executionCounters(record, c)
 	record["peak_memory_usage"] = t.peakBytes(attrs)
 	record["exception_preview"] = trimPreview(preview)
-	record["context"] = "{}"
+	record["context"] = t.executionContext(attrs)
 	record["headers"] = headers
 	record["payload"] = payload
 

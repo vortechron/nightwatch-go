@@ -116,7 +116,7 @@ func (t *Translator) commandRecord(root sdktrace.ReadOnlySpan, x execInfo, c cou
 	executionCounters(record, c)
 	record["peak_memory_usage"] = t.peakBytes(attrs)
 	record["exception_preview"] = trimPreview(preview)
-	record["context"] = "{}"
+	record["context"] = t.executionContext(attrs)
 
 	return record, true
 }
@@ -140,7 +140,7 @@ func (t *Translator) scheduledTaskRecord(root sdktrace.ReadOnlySpan, x execInfo,
 	executionCounters(record, c)
 	record["peak_memory_usage"] = t.peakBytes(attrs)
 	record["exception_preview"] = trimPreview(preview)
-	record["context"] = "{}"
+	record["context"] = t.executionContext(attrs)
 
 	return record
 }
@@ -167,7 +167,7 @@ func (t *Translator) jobAttemptRecord(root sdktrace.ReadOnlySpan, x execInfo, c 
 	executionCounters(record, c)
 	record["peak_memory_usage"] = t.peakBytes(attrs)
 	record["exception_preview"] = trimPreview(preview)
-	record["context"] = "{}"
+	record["context"] = t.executionContext(attrs)
 
 	return record
 }
