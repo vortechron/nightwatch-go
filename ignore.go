@@ -13,11 +13,10 @@ import "strings"
 // ("//"), is never ignored, whatever the patterns say, because the application
 // may treat it differently from what the pattern author had in mind.
 //
-// Pattern syntax, matched against the whole path, case sensitive:
-//
-//   - any characters except "/" (stays inside one segment)
-//     **  any characters including "/" (any depth, possibly none)
-//     everything else matches itself
+// A pattern is matched against the whole path, case sensitive. A single star
+// ("*") matches any characters except "/", so it stays inside one segment. A
+// double star ("**") matches any characters including "/", at any depth,
+// possibly none. Every other character matches itself.
 //
 // So "/build/*" covers /build/app.js but not /build/assets/app.js, and
 // "/build/**" covers both. Neither covers "/build" itself, and "/favicon.ico"

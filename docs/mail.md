@@ -18,4 +18,22 @@ The mailer shown in Omni is `smtp`, the only transport Goravel's mailer has. Pas
 
 ## Filtering
 
+`RejectMail` drops the mail for which the callback returns `true`, like `Nightwatch::rejectMail()`:
+
+```go
+client.RejectMail(func(mail nightwatch.Mail) bool {
+	return mail.Class == "mails.InternalAlert"
+})
+```
+
 `NIGHTWATCH_IGNORE_MAIL=true` drops every mail record.
+
+## Redaction
+
+`RedactMail` lets you change the subject before it is sent, like `Nightwatch::redactMail()`:
+
+```go
+client.RedactMail(func(mail *nightwatch.Mail) {
+	mail.Subject = strings.ReplaceAll(mail.Subject, "secret", "***")
+})
+```

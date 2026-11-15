@@ -13,7 +13,9 @@ type Frame struct {
 	File string `json:"file"`
 	// Source is the function, for example "pkg.(*T).Method(args)".
 	Source string `json:"source"`
-	// Code is the source excerpt. Always null: the client does not read files.
+	// Code is the source excerpt: an object of line number to source line,
+	// filled for the first ten application frames whose file can be read when
+	// CaptureExceptionSourceCode is on (the default). Null otherwise.
 	Code any `json:"code"`
 }
 

@@ -92,13 +92,30 @@ end(nil)
 
 The cache event types are `nightwatch.CacheHit`, `CacheMiss`, `CacheWrite`, `CacheWriteFailure`, `CacheDelete` and `CacheDeleteFailure`. The task statuses are `nightwatch.TaskProcessed`, `TaskFailed` and `TaskSkipped`.
 
+## Executions, sampling and context
+
+The roots (`StartCommand`, `StartScheduledTask`, `StartJobAttempt`) return a context that is marked active. For a request you start yourself, mark the request's context with `nightwatch.MarkActive` while the request span is the current span. `nightwatch.Sample`, `DontSample`, `AddContext`, `Pause`, `Resume` and `Ignore` then work on that execution. See [Filtering](filtering) and [Context](context).
+
+## Filters, redaction and query locations
+
+The filter, redaction and rate limit callbacks (`RejectQueries`, `RedactRequests`, `OnIngesting` and the rest) are methods of the client, the same as with Goravel. They are shared with `client.Translator()`.
+
+To fill the file and line of query records, add `nightwatch.QueryCallerProcessor` to your tracer provider with the tracer name (instrumentation scope) of your database instrumentation:
+
+```go
+tp := sdktrace.NewTracerProvider(
+	sdktrace.WithSpanProcessor(nightwatch.QueryCallerProcessor("github.com/XSAM/otelsql")),
+	sdktrace.WithBatcher(client.SpanExporter()),
+)
+```
+
 ## Your own spans
 
 To make a record from a span you start yourself, set `nightwatch.AttrRecord` to one of the record types and fill the matching `nightwatch.Attr*` attributes. The helpers above are the reference for which attributes each record reads.
 
 ## Statistics
 
-`client.Stats()` returns the records still pending, the records dropped and the translator's counters (`TracesEvicted`, `SpansDropped`, `OwnersEvicted`, `LateChildren`).
+`client.Stats()` returns the records still pending, the records dropped, the records an `OnIngesting` listener refused and the translator's counters (`TracesEvicted`, `SpansDropped`, `OwnersEvicted`, `LateChildren`).
 
 ```go
 s := client.Stats()

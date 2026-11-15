@@ -29,4 +29,40 @@ The exit codes follow Goravel's: 0 on success, 1 on failure, and 0 when the comm
 
 ## Sampling
 
-`NIGHTWATCH_COMMAND_SAMPLE_RATE` sets the share of command runs kept.
+### Global sampling
+
+`NIGHTWATCH_COMMAND_SAMPLE_RATE` sets the share of command runs kept, with their queries, queued jobs and exceptions.
+
+### Sampling specific commands
+
+Call `nightwatch.Sample` or `nightwatch.DontSample` with the command's context, at the start of its `Handle`:
+
+```go
+func (c *Cleanup) Handle(ctx console.Context) error {
+	nightwatch.DontSample(ctx)
+
+	return nil
+}
+```
+
+### Sampling vendor commands
+
+Laravel does not sample some framework and package commands, such as `schedule:list`, `model:prune` and `queue:monitor`. `nightwatch.DefaultVendorCommands()` returns the full list. nightwatch-go records them by default, so upgrading changes nothing. To get Laravel's behaviour:
+
+```go
+client.CaptureDefaultVendorCommands(false)
+```
+
+## Filtering
+
+There are no filtering callbacks for commands, as in Laravel. Use sampling.
+
+## Redaction
+
+`RedactCommands` lets you change the command line before it is sent, like `Nightwatch::redactCommands()`:
+
+```go
+client.RedactCommands(func(command *nightwatch.Command) {
+	command.Command = strings.ReplaceAll(command.Command, "secret", "***")
+})
+```

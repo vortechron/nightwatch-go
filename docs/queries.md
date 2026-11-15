@@ -17,10 +17,30 @@ A query made without the context has no execution to attach to.
 
 Queries are grouped like the PHP package: for known SQL drivers the statement is normalised first, so lists of values group together. `nightwatch.QueryGroup(driver, connection, sql)` returns the group hash.
 
+## File and line
+
+Like Laravel, each query record shows the file and line of the code that ran it. The provider adds `nightwatch.QueryCallerProcessor` to Goravel's tracer provider: when a database span starts, it reads the call stack and keeps the first application frame (not the Go installation, not the module cache or `vendor`). When there is none, it keeps the first dependency frame outside the database layers, as Laravel falls back to the first vendor file outside the framework. Paths are absolute, like exception frames.
+
+The `nightwatch.query.file` and `nightwatch.query.line` attributes (`nightwatch.AttrQueryFile`, `nightwatch.AttrQueryLine`) set by hand on a span win over the processor's.
+
 ## Filtering
 
-`NIGHTWATCH_IGNORE_QUERIES=true` drops every query record. The execution still counts its queries.
+`RejectQueries` drops the queries for which the callback returns `true`, like `Nightwatch::rejectQueries()`. A rejected query is not sent and not counted on its execution.
 
-## Known gaps
+```go
+client.RejectQueries(func(query nightwatch.Query) bool {
+	return strings.Contains(query.SQL, "into `jobs`")
+})
+```
 
-The query `file` and `line` are empty, because Goravel's database spans do not carry the caller. The `nightwatch.query.file` and `nightwatch.query.line` attributes fill them when you set them on a span yourself.
+`NIGHTWATCH_IGNORE_QUERIES=true` drops every query record. Those are not counted either.
+
+## Redaction
+
+`RedactQueries` lets you change the SQL before it is sent, like `Nightwatch::redactQueries()`. The query's group is hashed from the redacted SQL, as in Laravel.
+
+```go
+client.RedactQueries(func(query *nightwatch.Query) {
+	query.SQL = strings.ReplaceAll(query.SQL, "secret", "***")
+})
+```

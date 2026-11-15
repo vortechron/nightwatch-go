@@ -112,7 +112,7 @@ Same names as the PHP package.
 | `NIGHTWATCH_COMMAND_SAMPLE_RATE` | `1.0` | Commands, and jobs not started by a request |
 | `NIGHTWATCH_SCHEDULED_TASK_SAMPLE_RATE` | `1.0` | Scheduled tasks |
 | `NIGHTWATCH_EXCEPTION_SAMPLE_RATE` | `1.0` | A dropped execution with an unhandled exception is kept with this chance |
-| `NIGHTWATCH_IGNORE_QUERIES`, `_OUTGOING_REQUESTS`, `_CACHE_EVENTS`, `_MAIL`, `_NOTIFICATIONS` | `false` | Skip that record type (counters stay true) |
+| `NIGHTWATCH_IGNORE_QUERIES`, `_OUTGOING_REQUESTS`, `_CACHE_EVENTS`, `_MAIL`, `_NOTIFICATIONS` | `false` | Skip that record type. Skipped records are not counted on their execution either, as in Laravel |
 | `NIGHTWATCH_IGNORE_SCHEDULED_TASKS` | empty | Comma separated names of scheduled tasks that are not recorded: no task record and nothing that runs inside it. A scheduler callback has no context, so it must pass `nwgoravel.TaskContext(facades.Schedule(), name)` to the calls it makes, or they are records with no execution |
 | `NIGHTWATCH_IGNORE_PATHS` | empty | Comma separated request path globs that are not recorded at all: no request record, no queries, logs or exceptions of it, nothing in the counters. Example `/build/**,/favicon.ico`. See "Ignoring paths" below for the exact rules. Add more in code with `nwgoravel.WithIgnorePaths(...)` |
 | `NIGHTWATCH_LOG_LEVEL` | `LOG_LEVEL` or `debug` | Minimum log level sent |
@@ -128,8 +128,8 @@ retries or `MaxRetryTime` (2 min) per batch and then the batch is dropped and co
 the next, drop other 4xx with one log line, pause 15 minutes on 402, at most `MaxBuffered` (5000) records in a ring
 buffer (oldest dropped and counted; 0 means the default, never unbounded). `Enqueue` never blocks and is O(records).
 On `Shutdown` a failing batch gets one final attempt and is then dropped; when the context ends first the rest is
-dropped and counted; `Enqueue` after `Shutdown` is dropped and counted. `Client.Stats()` reports pending, dropped and
-the translator counters.
+dropped and counted; `Enqueue` after `Shutdown` is dropped and counted. `Client.Stats()` reports pending, dropped, refused
+(by an `OnIngesting` listener) and the translator counters.
 
 Translator bounds (config fields, defaults in brackets): `RootGrace` (1 s) a finished execution waits for late logs
 and spans before it is sent; `TraceMaxWait` (10 s) for a root that never ends; `MaxTraces` (2000), `MaxSpansPerTrace`
@@ -155,6 +155,27 @@ a late child (the counters on its execution then miss it). Records are built and
   requests, logs, exceptions, mail and queued jobs leave no record. For that, `IgnoreFilter` lets every request
   open its span (it used to return false for ignored paths). Without the span the queries of an ignored request
   were roots of their own and reached Omni as query records with an empty execution.
+
+## Filtering, sampling, redaction and context
+
+The Laravel Nightwatch API for these lives on the client (`nwgoravel.ClientFrom(app)` in a service provider's
+`Boot`) and in package functions. Details and examples: https://go.vortechron.com/nightwatch/filtering.
+
+- Filter callbacks: `RejectQueries`, `RejectCacheEvents`, `RejectCacheKeys` (PHP-style `/patterns/` or exact keys),
+  `RejectMail`, `RejectNotifications`, `RejectOutgoingRequests`, `RejectQueuedJobs`. A rejected record is not counted.
+- Redaction callbacks: `RedactRequests`, `RedactQueries`, `RedactCommands`, `RedactCacheEvents`, `RedactMail`,
+  `RedactOutgoingRequests`, `RedactExceptions`. Only the fields Laravel lets a callback change are used, and the
+  built-in redaction runs again afterwards. A callback that panics drops its record (it is never sent unredacted).
+- Sampling: `nightwatch.Sample(ctx, rate)`, `DontSample(ctx)`, the route middleware `nwgoravel.Sample(rate)`,
+  `SampleAlways()`, `SampleNever()`, `client.SampleScheduledTask(name, rate)`, and Laravel's vendor command rule
+  (`CaptureDefaultVendorCommands(false)`, off by default so upgrading changes nothing).
+- Inline filtering: `nightwatch.Ignore(ctx, fn)`, `ctx = nightwatch.Pause(ctx)`, `ctx = nightwatch.Resume(ctx)`. Jobs
+  queued from a paused or sampled-out execution are not sampled in the worker either.
+- Context: `nightwatch.AddContext(ctx, key, value)` fills the `context` column of the execution.
+- Rate limiting: `client.OnIngesting(func(nightwatch.IngestingEvents) bool)` can refuse a batch before it is sent.
+- `client.HandleUnrecoverableErrorsUsing(fn)` gets panicking callbacks and every dropped batch (`ErrBatchDropped`).
+- Query records carry the file and line that ran them (`nightwatch.QueryCallerProcessor`, registered by the
+  provider), and request records the route name and handler from Goravel's route info.
 
 ## What never reaches Omni
 
@@ -200,7 +221,25 @@ a trailing job argument that the wrapped job removes before your `Handle` runs.
 
 ## Changelog
 
-### Unreleased (after v0.2.4)
+### Unreleased
+
+- Added: Laravel's filter and redaction callbacks (`RejectQueries` ... `RejectQueuedJobs`, `RedactRequests` ...
+  `RedactExceptions`), `RejectCacheKeys`, and Laravel's vendor command and cache key lists (opt-in).
+- Added: `Sample`, `DontSample`, the `nwgoravel.Sample` route middleware and `SampleScheduledTask`.
+- Added: `Ignore`, `Pause`, `Resume` and `Paused`. A job queued from a paused or sampled-out context carries an
+  unsampled traceparent, and a job attempt with an unsampled parent is not sampled.
+- Added: `AddContext`; execution records now carry it in `context` (an empty object before).
+- Added: `OnIngesting`, `Stats().Refused`, `HandleUnrecoverableErrorsUsing` and `ErrBatchDropped`.
+- Added: query `file` and `line` (`QueryCallerProcessor`, `nwgoravel.RecordQueryLocations`), and `route_name` and
+  `route_action` from Goravel's route info. Both were empty before.
+- Fixed: docs said a skipped record type was still counted; it is not, as in Laravel. Doc comments of `Frame.Code`
+  and `PathIgnored` corrected.
+
+### v0.2.6
+
+- Docs: Laravel-style docs for go.vortechron.com.
+
+### v0.2.5
 
 - Added: `NIGHTWATCH_IGNORE_SCHEDULED_TASKS` (and `nwgoravel.IgnoreTasks`) drops a whole scheduled task, and
   `nwgoravel.TaskContext(schedule, name)` gives a scheduler callback the context of its run. Before, the queries of
@@ -240,6 +279,10 @@ cd example/goravel && go test -run TestExample .   # needs Redis (DB 15); starts
 - `NIGHTWATCH_INGEST_URL` (Go only) skips `POST /api/agent-auth`; the PHP package has no such setting.
 - `execution_stage` is always `action` for children (PHP names the middleware, render and other stages); the
   request's `bootstrap`, `render`, `sending` and `terminating` are 0 and `action` is the whole time.
+- Vendor commands and vendor cache keys are recorded unless `CaptureDefaultVendorCommands(false)` and
+  `CaptureDefaultVendorCacheKeys(false)` are called; Laravel leaves them out by default.
+- `AddContext` data is not carried into queued jobs, has secret looking keys redacted, and an oversized context keeps
+  the values that fit instead of being cut. The full list is in `docs/differences.md`.
 - Sampling is decided from the trace id, so a request and the jobs it queued agree; PHP rolls dice per execution.
 - Exceptions: each reported error counts, like PHP. The one skipped event is Goravel's own echo of an error this
   client already recorded with a stack (same span, same message, echo has no stack), once per original.
@@ -258,12 +301,12 @@ cd example/goravel && go test -run TestExample .   # needs Redis (DB 15); starts
 
 ## Known gaps
 
-- Query `file` and `line` are empty (Goravel's database spans do not carry the caller).
-- `route_action` is empty unless you set `nightwatch.route.action` on the span.
+- Notifications are not recorded automatically: notifications-go would have to call `nightwatch.StartNotification`.
 - `Cache().Lock`, `Add`, `Increment` and `Decrement` are not recorded (as in Laravel). Cache calls without `WithContext(ctx)` are not recorded.
 - Queue dispatch and mail need `nwgoravel.Queue(ctx, ...)` and `nwgoravel.Mail(ctx, ...)`; see above for why.
 - A worker without the provider would hand the trailing envelope string to `Handle`.
 - Goravel's mailer always sends SMTP AUTH, which a plain Mailpit refuses (the example's test brings a fake SMTP).
-- Goravel's own HTTP client did not emit spans in the example even with `enable_telemetry`; use `nwgoravel.Transport`.
+- Goravel's own HTTP client (`enable_telemetry`) is recorded only when the response body is read: otelhttp ends the
+  span on body read or close. `nwgoravel.Transport` ends it when the response arrives.
 - The scheduler and queue worker run callbacks with no context, so work inside a plain `Schedule().Call` closure is
   not linked to its task; jobs get a context through `ContextJob.HandleContext`.

@@ -64,4 +64,52 @@ The attempt number is counted per job id in one worker, because Goravel passes i
 
 ## Sampling
 
-A job queued by a request follows the request's sampling decision. A job that no request started follows `NIGHTWATCH_COMMAND_SAMPLE_RATE`.
+There is no rate of its own for jobs: a job is captured when the execution that queued it is captured. A job queued by a request follows the request's sampling decision. A job that no request started follows `NIGHTWATCH_COMMAND_SAMPLE_RATE`.
+
+A job queued from a paused context (see [Inline filtering](filtering#inline-filtering)), or from an execution that `nightwatch.Sample` or `nightwatch.DontSample` dropped, carries an unsampled `traceparent`, so its attempts are not sampled in the worker either.
+
+### Sampling specific jobs
+
+While not recommended, you may give one job its own rate by calling `nightwatch.Sample` at the start of its `HandleContext`:
+
+```go
+func (j *Report) HandleContext(ctx context.Context, args ...any) error {
+	nightwatch.Sample(ctx, 0.5) // keep half of the runs
+
+	return nil
+}
+```
+
+### Decoupling job sampling
+
+Laravel decouples every job with `Queue::before(fn () => Nightwatch::sample(...))`. Goravel's worker has no before hook, so call `nightwatch.Sample` in the `HandleContext` of each job you want to decouple. This may lead to a captured job whose request was not captured, or the other way round, which gives a less complete view.
+
+## Filtering
+
+`RejectQueuedJobs` drops the `queued-job` record of the jobs for which the callback returns `true`, like `Nightwatch::rejectQueuedJobs()`. The job's attempts are separate executions and are still recorded, as in Laravel:
+
+```go
+client.RejectQueuedJobs(func(job nightwatch.QueuedJob) bool {
+	return job.Name == "jobs.LowPriority"
+})
+```
+
+## Redaction
+
+There are no redaction callbacks for jobs, as in Laravel.
+
+## Reporting manually failed jobs
+
+Goravel has no `$this->fail()`: a job fails by returning an error, and that error is recorded as an exception and makes the attempt `failed`. To report a different error than the one you return, report it first:
+
+```go
+func (j *Import) HandleContext(ctx context.Context, args ...any) error {
+	if err := importRows(ctx); err != nil {
+		nightwatch.ReportError(ctx, err)
+
+		return errors.New("import failed")
+	}
+
+	return nil
+}
+```

@@ -4,6 +4,7 @@
 - ## The Basics
     - [Events and Executions](events)
     - [Filtering](filtering)
+    - [Context](context)
     - [Users](users)
 - ## Events
     - [Requests](requests)

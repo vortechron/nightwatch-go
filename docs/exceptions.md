@@ -44,3 +44,29 @@ NIGHTWATCH_CAPTURE_EXCEPTION_SOURCE_CODE=false
 ## Sampling
 
 An execution that was sampled out but has an unhandled exception is kept with the chance `NIGHTWATCH_EXCEPTION_SAMPLE_RATE` (default `1.0`). Set it to `0` to capture exceptions only from sampled executions.
+
+## Redaction
+
+`RedactExceptions` lets you change an exception's message before it is sent, like `Nightwatch::redactExceptions()`. The execution's exception preview shows the redacted text too:
+
+```go
+client.RedactExceptions(func(exception *nightwatch.Exception) {
+	exception.Message = strings.ReplaceAll(exception.Message, "secret", "***")
+})
+```
+
+## Unrecoverable errors
+
+When nightwatch-go cannot record or send your data, it cannot tell you through Omni. `HandleUnrecoverableErrorsUsing` registers a handler for these errors, like `Nightwatch::handleUnrecoverableExceptionsUsing()`: a filter, redaction or `OnIngesting` callback that panicked, and every batch the sender had to drop (Omni refused it, the retries ran out, the event quota was reached, or the client shut down first). The errors of dropped batches wrap `nightwatch.ErrBatchDropped`.
+
+```go
+client.HandleUnrecoverableErrorsUsing(func(err error) {
+	// Write to a log channel that does not go to Nightwatch.
+	facades.Log().Channel("single").Error("Nightwatch could not record events: " + err.Error())
+})
+```
+
+A handler that panics is ignored. A later call replaces the handler. The error names the type of the record a callback panicked on, never its contents.
+
+> [!WARNING]
+> This may write many lines when Nightwatch is not configured right and fails on every request.
