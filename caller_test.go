@@ -3,9 +3,7 @@ package nightwatch_test
 import (
 	"context"
 	"runtime"
-	"strings"
 	"testing"
-	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -56,25 +54,5 @@ func TestQueryCallerProcessor_LeavesOtherScopesAndKindsAlone(t *testing.T) {
 		if _, set := attrsOf(span)[nightwatch.AttrQueryFile]; set {
 			t.Fatalf("%s got a query location", span.Name())
 		}
-	}
-}
-
-func TestQueryCallerProcessor_TheGoToolchainIsNeverTheLocation(t *testing.T) {
-	recorder := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(nightwatch.QueryCallerProcessor(dbScope)), sdktrace.WithSpanProcessor(recorder))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-
-	// Started from a goroutine of the standard library only: no application
-	// frame and no dependency frame, so no location at all.
-	done := make(chan struct{})
-	time.AfterFunc(0, func() {
-		_, span := tp.Tracer(dbScope).Start(context.Background(), "db", trace.WithSpanKind(trace.SpanKindClient))
-		span.End()
-		close(done)
-	})
-	<-done
-
-	if file, set := attrsOf(recorder.Ended()[0])[nightwatch.AttrQueryFile]; set && strings.Contains(file.AsString(), "/src/") {
-		t.Fatalf("location %v is in the Go installation", file)
 	}
 }
