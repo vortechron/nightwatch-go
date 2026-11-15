@@ -52,6 +52,9 @@ type hookSet struct {
 
 	ingesting []func(IngestingEvents) bool
 
+	skipVendorCommands bool
+	taskRates          map[string]float64
+
 	unrecoverable func(error)
 }
 

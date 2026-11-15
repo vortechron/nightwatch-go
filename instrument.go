@@ -233,7 +233,10 @@ const (
 
 // TaskInfo describes a scheduled task.
 type TaskInfo struct {
-	Name                  string
+	Name string
+	// Command is the command line of a task that runs a console command, or
+	// "". The DefaultVendorCommands rule reads its first word.
+	Command               string
 	Cron                  string
 	Timezone              string
 	RepeatSeconds         int
@@ -251,6 +254,7 @@ func StartScheduledTask(ctx context.Context, info TaskInfo) (context.Context, Ta
 	ctx, span := tracer().Start(ctx, "schedule "+info.Name, trace.WithNewRoot(), trace.WithAttributes(
 		attribute.String(AttrRecord, RecordScheduledTask),
 		attribute.String(AttrTaskName, info.Name),
+		attribute.String(AttrTaskCommand, info.Command),
 		attribute.String(AttrTaskCron, info.Cron),
 		attribute.String(AttrTaskTimezone, info.Timezone),
 		attribute.Int(AttrTaskRepeat, info.RepeatSeconds),

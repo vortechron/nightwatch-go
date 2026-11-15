@@ -76,6 +76,7 @@ const (
 	AttrCommandExitCode = "nightwatch.command.exit_code"
 
 	AttrTaskName          = "nightwatch.schedule.name"
+	AttrTaskCommand       = "nightwatch.schedule.command"
 	AttrTaskCron          = "nightwatch.schedule.cron"
 	AttrTaskTimezone      = "nightwatch.schedule.timezone"
 	AttrTaskRepeat        = "nightwatch.schedule.repeat_seconds"

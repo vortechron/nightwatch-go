@@ -151,3 +151,20 @@ func TestSchedule_AnIgnoredTaskLeavesNothingNotEvenItsQueries(t *testing.T) {
 		t.Fatalf("want only the task that is not ignored and its query: tasks %v queries %v", tasks, queries)
 	}
 }
+
+func TestSchedule_AVendorCommandTaskIsSkippedWhenVendorCommandsAreNotCaptured(t *testing.T) {
+	out, tr := setupTranslator(t)
+	tr.CaptureDefaultVendorCommands(false)
+	inner := &fakeSchedule{}
+	WrapSchedule(inner, &recordingArtisan{}).Register([]schedule.Event{
+		&fakeEvent{name: "prune", command: "model:prune --model=Post"},
+		&fakeEvent{name: "report", command: "app:report"},
+	})
+
+	inner.registered[0].GetCallback()()
+	inner.registered[1].GetCallback()()
+
+	if tasks := out.ofType("scheduled-task"); len(tasks) != 1 || tasks[0]["name"] != "report" {
+		t.Fatalf("tasks: %v", tasks)
+	}
+}

@@ -166,6 +166,7 @@ func taskInfo(event schedule.Event) nightwatch.TaskInfo {
 	}
 
 	info.Cron = event.GetCron()
+	info.Command = event.GetCommand()
 	info.OnOneServer = event.IsOnOneServer()
 	info.WithoutOverlapping = event.GetSkipIfStillRunning() || event.GetDelayIfStillRunning()
 

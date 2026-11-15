@@ -118,25 +118,14 @@ func sampledBy(traceID trace.TraceID, rate float64) bool {
 	return float64(value)/float64(math.MaxUint64) <= rate
 }
 
+// rateFor is the sample rate of an execution: the one Sample set, else the
+// configured one.
 func (t *Translator) rateFor(root sdktrace.ReadOnlySpan, kind string) float64 {
 	if rate, set := newAttrSet(root.Attributes()).float(AttrSampleRate); set {
 		return rate
 	}
 
-	switch kind {
-	case RecordCommand:
-		return t.cfg.CommandSampleRate
-	case RecordScheduledTask:
-		return t.cfg.ScheduledTaskSampleRate
-	case RecordJobAttempt:
-		if root.Parent().IsValid() {
-			return t.cfg.RequestSampleRate
-		}
-
-		return t.cfg.CommandSampleRate
-	default:
-		return t.cfg.RequestSampleRate
-	}
+	return t.configuredRate(root, kind)
 }
 
 func firstUser(spans []sdktrace.ReadOnlySpan) string {
