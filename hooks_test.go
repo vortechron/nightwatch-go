@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -425,5 +427,56 @@ func TestHooks_RequestPayloadStaysEmptyWhenNotCaptured(t *testing.T) {
 
 	if got := h.sink.ofType(RecordRequest)[0]["payload"]; got != "" {
 		t.Fatalf("payload = %v", got)
+	}
+}
+
+func TestHooks_ChildrenShowTheRedactedPathInTheirExecutionPreview(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.RootGrace = time.Second })
+	now := time.Now()
+	h.tr.now = func() time.Time { return now }
+	calls := 0
+	h.tr.RedactRequests(func(r *Request) {
+		calls++
+		r.URL = strings.Replace(r.URL, "/api/tasks/7", "/api/tasks/***", 1)
+	})
+
+	var late trace.Span
+	var lateCtx context.Context
+	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
+		h.query(ctx, "select 1")
+		lateCtx, late = h.tracer.Start(ctx, "q", trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attribute.String("db.query.text", "select 2")))
+	})
+	now = now.Add(2 * time.Second)
+	h.tr.Sweep()
+	late.End()
+	h.log(lateCtx, otellog.SeverityInfo, "much later")
+
+	children := append(h.sink.ofType(RecordQuery), h.sink.ofType(RecordLog)...)
+	if len(children) != 3 {
+		t.Fatalf("children = %v", children)
+	}
+
+	for _, child := range children {
+		if child["execution_preview"] != "GET /api/tasks/***" {
+			t.Fatalf("a child leaks the path the callback redacted: %v", child)
+		}
+	}
+
+	if calls != 1 {
+		t.Fatalf("the callback ran %d times, want once per request", calls)
+	}
+}
+
+func TestHooks_APanickingRequestRedactionDropsTheRequestAndItsChildren(t *testing.T) {
+	h := newHarness(t, nil)
+	h.tr.RedactRequests(func(*Request) { panic("bug") })
+
+	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
+		h.query(ctx, "select 1")
+		h.log(ctx, otellog.SeverityInfo, "hi")
+	})
+
+	if records := h.sink.all(); len(records) != 0 {
+		t.Fatalf("records = %v", records)
 	}
 }

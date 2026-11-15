@@ -83,6 +83,7 @@ type pendingExec struct {
 	info    execInfo
 	members []sdktrace.ReadOnlySpan
 	logs    []sdklog.Record
+	request *preparedRequest
 	due     time.Time
 }
 
@@ -113,11 +114,15 @@ func (t *Translator) Stats() TranslatorStats {
 
 // AddSpans accepts ended spans.
 func (t *Translator) AddSpans(spans []sdktrace.ReadOnlySpan) {
+	// Request redaction callbacks run here, outside the lock, once per request:
+	// the preview every child carries must already be the redacted one.
+	prepared := t.prepareRequests(spans)
+
 	var items []work
 
 	t.mu.Lock()
 	for _, span := range spans {
-		items = append(items, t.addSpan(span)...)
+		items = append(items, t.addSpan(span, prepared[span.SpanContext().SpanID()])...)
 	}
 	t.mu.Unlock()
 
@@ -137,7 +142,7 @@ func (t *Translator) AddLogs(records []sdklog.Record) {
 	t.run(items)
 }
 
-func (t *Translator) addSpan(span sdktrace.ReadOnlySpan) []work {
+func (t *Translator) addSpan(span sdktrace.ReadOnlySpan, prepared *preparedRequest) []work {
 	sc := span.SpanContext()
 	kind := execKind(span)
 
@@ -161,7 +166,7 @@ func (t *Translator) addSpan(span sdktrace.ReadOnlySpan) []work {
 		return evicted
 	}
 
-	return append(evicted, t.finishRoot(sc.TraceID(), buf, span, kind)...)
+	return append(evicted, t.finishRoot(sc.TraceID(), buf, span, kind, prepared)...)
 }
 
 func (t *Translator) addLog(entry sdklog.Record) []work {
@@ -255,12 +260,17 @@ func (t *Translator) lateOwner(buf *traceBuf, parent trace.SpanID) (ownerRef, bo
 	return owner, found && owner.info.root.IsValid()
 }
 
-func (t *Translator) finishRoot(traceID trace.TraceID, buf *traceBuf, root sdktrace.ReadOnlySpan, kind string) []work {
+func (t *Translator) finishRoot(traceID trace.TraceID, buf *traceBuf, root sdktrace.ReadOnlySpan, kind string, prepared *preparedRequest) []work {
 	rootID := root.SpanContext().SpanID()
 	members, logs := t.collect(buf, rootID)
 
 	info := newExecInfo(root, kind, firstUser(members))
 	info.sampled = !newAttrSet(root.Attributes()).bool(AttrIgnore) && t.keep(traceID, root, kind, members)
+
+	if prepared != nil {
+		info.preview = prepared.preview
+		info.sampled = info.sampled && prepared.ok
+	}
 
 	expires := t.now().Add(2*t.cfg.TraceMaxWait + t.cfg.RootGrace)
 	for _, member := range members {
@@ -272,7 +282,7 @@ func (t *Translator) finishRoot(traceID trace.TraceID, buf *traceBuf, root sdktr
 	t.trimOwners()
 	t.dropIfEmpty(traceID, buf)
 
-	exec := &pendingExec{root: root, info: info, members: members, logs: logs, due: t.now().Add(t.cfg.RootGrace)}
+	exec := &pendingExec{root: root, info: info, members: members, logs: logs, request: prepared, due: t.now().Add(t.cfg.RootGrace)}
 	if t.cfg.RootGrace <= 0 {
 		return []work{{kind: workExec, exec: exec}}
 	}

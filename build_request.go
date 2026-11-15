@@ -2,28 +2,92 @@ package nightwatch
 
 import (
 	"encoding/json"
+	"net/url"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
-// requestRecord builds the request execution record. It reports false when a
-// RedactRequests callback panicked.
-func (t *Translator) requestRecord(root sdktrace.ReadOnlySpan, x execInfo, c counters, preview string) (Record, bool) {
+// preparedRequest is a request after the RedactRequests callbacks ran: the
+// fields to send and the preview its children carry. ok is false when a
+// callback panicked; the execution is then dropped.
+type preparedRequest struct {
+	request          Request
+	headers, payload string
+	preview          string
+	ok               bool
+}
+
+// prepareRequests runs the request redaction callbacks for the request roots
+// among spans. It returns nil when no callback is registered, so the default
+// path stays as it was.
+func (t *Translator) prepareRequests(spans []sdktrace.ReadOnlySpan) map[trace.SpanID]*preparedRequest {
+	hooks := t.load()
+	if len(hooks.redactRequests) == 0 {
+		return nil
+	}
+
+	prepared := map[trace.SpanID]*preparedRequest{}
+
+	for _, span := range spans {
+		if execKind(span) == RecordRequest && !newAttrSet(span.Attributes()).bool(AttrIgnore) {
+			prepared[span.SpanContext().SpanID()] = t.prepareRequest(hooks, span)
+		}
+	}
+
+	return prepared
+}
+
+// prepareRequest reads a request from its root span and runs the callbacks.
+func (t *Translator) prepareRequest(hooks *hookSet, root sdktrace.ReadOnlySpan) *preparedRequest {
 	attrs := newAttrSet(root.Attributes())
 	request, headers, payload := t.requestFields(root, attrs)
+	out := &preparedRequest{request: request, headers: headers, payload: payload, preview: requestPreview(attrs), ok: true}
 
-	if hooks := t.load(); len(hooks.redactRequests) > 0 {
-		request.Headers, request.Payload = decodeHeaders(headers), decodePayload(payload)
-
-		redacted, keep := filtered(hooks, nil, hooks.redactRequests, request)
-		if !keep {
-			return nil, false
-		}
-
-		request.URL, request.IP = redacted.URL, redacted.IP
-		headers = t.reRedactHeaders(redacted.Headers)
-		payload = t.reRedactPayload(payload, redacted.Payload)
+	if len(hooks.redactRequests) == 0 {
+		return out
 	}
+
+	request.Headers, request.Payload = decodeHeaders(headers), decodePayload(payload)
+
+	redacted, keep := filtered(hooks, nil, hooks.redactRequests, request)
+	if !keep {
+		return &preparedRequest{}
+	}
+
+	out.request.URL = RedactURL(redacted.URL, t.cfg.RedactQuery)
+	out.request.IP = redacted.IP
+	out.headers = t.reRedactHeaders(redacted.Headers)
+	out.payload = t.reRedactPayload(payload, redacted.Payload)
+	out.preview = request.Method + " " + previewPath(out.request.URL, request.RoutePath)
+
+	return out
+}
+
+// previewPath is the path of a redacted URL, or the route pattern when the
+// callback left something that is not a URL: never the original path.
+func previewPath(target, route string) string {
+	if parsed, err := url.Parse(target); err == nil && parsed.Path != "" {
+		return parsed.Path
+	}
+
+	return route
+}
+
+// requestRecord builds the request execution record from the prepared
+// request (callbacks already ran), or prepares it now. It reports false when
+// a RedactRequests callback panicked.
+func (t *Translator) requestRecord(root sdktrace.ReadOnlySpan, x execInfo, c counters, preview string, prepared *preparedRequest) (Record, bool) {
+	if prepared == nil {
+		prepared = t.prepareRequest(t.load(), root)
+	}
+
+	if !prepared.ok {
+		return nil, false
+	}
+
+	attrs := newAttrSet(root.Attributes())
+	request, headers, payload := prepared.request, prepared.headers, prepared.payload
 
 	record := t.headRecord(RecordRequest, root.StartTime(), RequestGroup(request.RouteMethods, request.RouteDomain, request.RoutePath), x.traceID)
 
@@ -32,7 +96,7 @@ func (t *Translator) requestRecord(root sdktrace.ReadOnlySpan, x execInfo, c cou
 
 	record["user"] = x.user
 	record["method"] = request.Method
-	record["url"] = TinyText(RedactURL(request.URL, t.cfg.RedactQuery))
+	record["url"] = TinyText(request.URL)
 	record["route_name"] = request.RouteName
 	record["route_methods"] = request.RouteMethods
 	record["route_domain"] = request.RouteDomain

@@ -50,7 +50,7 @@ func (t *Translator) render(item work) []Record {
 			return nil
 		}
 
-		return t.assemble(item.exec.root, item.exec.info, item.exec.members, item.exec.logs)
+		return t.assemble(item.exec, item.exec.info)
 	case workOrphans:
 		return t.renderOrphans(item)
 	case workLateSpan:
@@ -102,8 +102,9 @@ func (t *Translator) renderOrphans(item work) []Record {
 }
 
 // assemble builds the execution record and every child record.
-func (t *Translator) assemble(root sdktrace.ReadOnlySpan, x execInfo, members []sdktrace.ReadOnlySpan, logs []sdklog.Record) []Record {
-	children, tally := t.children(root, x, members, logs)
+func (t *Translator) assemble(exec *pendingExec, x execInfo) []Record {
+	root, members := exec.root, exec.members
+	children, tally := t.children(root, x, members, exec.logs)
 
 	preview := ""
 	for _, record := range children {
@@ -112,7 +113,7 @@ func (t *Translator) assemble(root sdktrace.ReadOnlySpan, x execInfo, members []
 		}
 	}
 
-	execution, ok := t.buildExecution(root, x, tally, preview)
+	execution, ok := t.buildExecution(exec, x, tally, preview)
 	if !ok {
 		return nil
 	}

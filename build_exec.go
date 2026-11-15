@@ -51,7 +51,9 @@ func spanFailed(span sdktrace.ReadOnlySpan) bool {
 
 // buildExecution turns a root span into its execution record. It reports
 // false when a redaction callback panicked: the execution is then not sent.
-func (t *Translator) buildExecution(root sdktrace.ReadOnlySpan, x execInfo, c counters, preview string) (Record, bool) {
+func (t *Translator) buildExecution(exec *pendingExec, x execInfo, c counters, preview string) (Record, bool) {
+	root := exec.root
+
 	switch x.kind {
 	case RecordJobAttempt:
 		return t.jobAttemptRecord(root, x, c, preview), true
@@ -60,7 +62,7 @@ func (t *Translator) buildExecution(root sdktrace.ReadOnlySpan, x execInfo, c co
 	case RecordScheduledTask:
 		return t.scheduledTaskRecord(root, x, c, preview), true
 	default:
-		return t.requestRecord(root, x, c, preview)
+		return t.requestRecord(root, x, c, preview, exec.request)
 	}
 }
 
