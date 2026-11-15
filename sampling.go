@@ -8,6 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // AttrSampleRate on an execution root span replaces the configured sample
@@ -37,6 +38,26 @@ func Sample(ctx context.Context, rate float64) {
 	}
 
 	exec.root.SetAttributes(attribute.Float64(AttrSampleRate, rate))
+	exec.rate.Store(&rate)
+}
+
+// sampledOut reports whether work queued from ctx belongs to an execution that
+// will not be kept: ctx is paused, or Sample chose to drop the execution.
+// Executions that only follow the configured rate are not known here and
+// report false, as before.
+func sampledOut(ctx context.Context) bool {
+	if Paused(ctx) {
+		return true
+	}
+
+	exec := executionOf(ctx)
+	if exec == nil {
+		return false
+	}
+
+	rate := exec.rate.Load()
+
+	return rate != nil && !sampledBy(trace.SpanContextFromContext(ctx).TraceID(), *rate)
 }
 
 // DontSample drops the execution ctx belongs to (Laravel's
@@ -117,7 +138,11 @@ func (t *Translator) configuredRate(root sdktrace.ReadOnlySpan, kind string) flo
 
 		return t.cfg.ScheduledTaskSampleRate
 	case RecordJobAttempt:
-		if root.Parent().IsValid() {
+		// A job queued from a paused or sampled-out execution arrives with an
+		// unsampled traceparent: like Laravel, its attempts are not sampled.
+		if parent := root.Parent(); parent.IsValid() && !parent.IsSampled() {
+			return 0
+		} else if parent.IsValid() {
 			return t.cfg.RequestSampleRate
 		}
 

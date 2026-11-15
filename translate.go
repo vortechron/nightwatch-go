@@ -75,6 +75,9 @@ type traceBuf struct {
 type ownerRef struct {
 	info    execInfo
 	expires time.Time
+	// paused is true for a span under a Pause marker: its late children are
+	// left out too.
+	paused bool
 }
 
 // pendingExec is a finished execution waiting out its grace period.
@@ -273,9 +276,11 @@ func (t *Translator) finishRoot(traceID trace.TraceID, buf *traceBuf, root sdktr
 	}
 
 	expires := t.now().Add(2*t.cfg.TraceMaxWait + t.cfg.RootGrace)
+	paused := pausedSpans(members)
+
 	for _, member := range members {
 		id := member.SpanContext().SpanID()
-		t.owners[id] = ownerRef{info: info, expires: expires}
+		t.owners[id] = ownerRef{info: info, expires: expires, paused: paused[id]}
 		delete(buf.spans, id)
 	}
 
@@ -373,10 +378,17 @@ func (t *Translator) rerollForException(exceptions []exceptionInfo) bool {
 // grace period it joins the waiting execution. After that it is sent alone and
 // counted as late.
 func (t *Translator) lateSpan(traceID trace.TraceID, span sdktrace.ReadOnlySpan, owner ownerRef) []work {
+	owner.paused = owner.paused || isPauseMarker(span)
 	t.owners[span.SpanContext().SpanID()] = owner
 
 	if exec, waiting := t.pending[owner.info.root]; waiting {
 		exec.members = append(exec.members, span)
+
+		return nil
+	}
+
+	if owner.paused {
+		t.forgetEmpty(traceID)
 
 		return nil
 	}

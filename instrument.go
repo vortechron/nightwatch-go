@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +28,9 @@ type activeKey struct{}
 // its root span, so Sample can reach it from any child context.
 type execution struct {
 	root trace.Span
+	// rate is the rate Sample set, nil when none was set. Jobs queued from the
+	// execution read it, so their attempts follow a sampled-out execution.
+	rate atomic.Pointer[float64]
 }
 
 // MarkActive returns a context that says "this runs inside a Nightwatch

@@ -132,8 +132,10 @@ func (t *Translator) children(root sdktrace.ReadOnlySpan, x execInfo, members []
 	var records []Record
 
 	rootID := root.SpanContext().SpanID()
+	paused := pausedSpans(members)
+
 	for _, span := range members {
-		if span.SpanContext().SpanID() == rootID {
+		if id := span.SpanContext().SpanID(); id == rootID || paused[id] {
 			continue
 		}
 

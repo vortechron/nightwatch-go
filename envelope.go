@@ -54,8 +54,14 @@ func EncodeJobEnvelope(ctx context.Context, connection, queue string, sync bool)
 		flag = "1"
 	}
 
+	traceparent := carrier.Get("traceparent")
+	if sampledOut(ctx) && len(traceparent) > 2 {
+		// The trace flags tell the worker not to sample the attempts.
+		traceparent = traceparent[:len(traceparent)-2] + "00"
+	}
+
 	body := strings.Join([]string{
-		envelopeTag, carrier.Get("traceparent"), jobID,
+		envelopeTag, traceparent, jobID,
 		url.QueryEscape(connection), url.QueryEscape(queue), url.QueryEscape(UserFromContext(ctx)), flag,
 	}, "|")
 
