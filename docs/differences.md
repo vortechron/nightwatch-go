@@ -2,7 +2,7 @@
 
 ## Not ported yet
 
-- **Notifications are not recorded automatically.** `vortechron/notifications-go` has send hooks, but nightwatch-go is a public module and cannot import that private one. Until notifications-go calls `nightwatch.StartNotification` itself, wrap your sends with it. See [Notifications](notifications).
+- **Notifications are not recorded automatically.** nightwatch-go does not hook into a notification package, because it would have to depend on it. A package that sends notifications can call `nightwatch.StartNotification` around each delivery; until yours does, wrap your sends with it. See [Notifications](notifications).
 - **`Nightwatch::sampling()`** has no Go form: a context does not know the configured rate of its execution.
 
 ## Skip

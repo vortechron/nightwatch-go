@@ -276,7 +276,7 @@ func TestHooks_OutgoingRequestsAreRejectedAndRedactedAndTheQueryStaysRedacted(t 
 	})
 	h.tr.RedactOutgoingRequests(func(r *OutgoingRequest) {
 		// A callback that puts a secret back into the query is redacted again.
-		r.URL = strings.Replace(r.URL, "/users/42", "/users/***", 1) + "&api_key=sk_live_1"
+		r.URL = strings.Replace(r.URL, "/users/42", "/users/***", 1) + "&api_key=k123"
 	})
 
 	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {

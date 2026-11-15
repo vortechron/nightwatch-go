@@ -301,7 +301,7 @@ cd example/goravel && go test -run TestExample .   # needs Redis (DB 15); starts
 
 ## Known gaps
 
-- Notifications are not recorded automatically: notifications-go would have to call `nightwatch.StartNotification`.
+- Notifications are not recorded automatically: the package that sends them has to call `nightwatch.StartNotification`.
 - `Cache().Lock`, `Add`, `Increment` and `Decrement` are not recorded (as in Laravel). Cache calls without `WithContext(ctx)` are not recorded.
 - Queue dispatch and mail need `nwgoravel.Queue(ctx, ...)` and `nwgoravel.Mail(ctx, ...)`; see above for why.
 - A worker without the provider would hand the trailing envelope string to `Handle`.

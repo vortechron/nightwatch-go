@@ -12,7 +12,7 @@ end(nil)
 Call `end` when the notification was sent. Pass the error when sending failed.
 
 > [!NOTE]
-> Notifications are not recorded automatically yet. `vortechron/notifications-go` has `OnSending`, `OnSent` and `OnFailed` hooks, but nightwatch-go is a public module and cannot import it. Until notifications-go calls `nightwatch.StartNotification` itself, wrap your send calls as shown above.
+> Notifications are not recorded automatically yet. nightwatch-go does not hook into a notification package, because it would have to depend on it. A package that sends notifications can call `nightwatch.StartNotification` around each delivery; until yours does, wrap your send calls as shown above.
 
 ## Filtering
 
