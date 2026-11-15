@@ -76,6 +76,25 @@ func TestIngesting_ListenersThatAllowSendTheBatchUnchanged(t *testing.T) {
 	}
 }
 
+func TestIngesting_AListenerCannotChangeNestedListsThatAreSent(t *testing.T) {
+	f := newFakeOmni(t)
+	runClient(t, f, func(c *Client) {
+		c.OnIngesting(func(e IngestingEvents) bool {
+			for _, record := range e.Records {
+				if methods, ok := record["route_methods"].([]string); ok && len(methods) > 0 {
+					methods[0] = "TAMPERED"
+				}
+			}
+
+			return true
+		})
+	})
+
+	if body := string(gunzip(t, f.waitFor(t, 1)[0].body)); strings.Contains(body, "TAMPERED") || !strings.Contains(body, `"route_methods":["GET"]`) {
+		t.Fatalf("listeners see a deep copy; batch = %s", body)
+	}
+}
+
 func TestIngesting_APanickingListenerDropsTheBatchAndIsReported(t *testing.T) {
 	f := newFakeOmni(t)
 	var mu sync.Mutex

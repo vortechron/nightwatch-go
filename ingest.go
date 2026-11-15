@@ -3,7 +3,7 @@ package nightwatch
 import (
 	"errors"
 	"fmt"
-	"maps"
+	"slices"
 )
 
 // ErrBatchDropped is wrapped by the errors the HandleUnrecoverableErrorsUsing
@@ -12,8 +12,8 @@ import (
 var ErrBatchDropped = errors.New("nightwatch: a batch of records was dropped")
 
 // IngestingEvents is what an OnIngesting listener gets before a batch is sent
-// (Laravel's Laravel\Nightwatch\Events\IngestingEvents). Records is a copy:
-// changing it changes nothing that is sent.
+// (Laravel's Laravel\Nightwatch\Events\IngestingEvents). Records is a deep
+// copy, nested lists included: changing it changes nothing that is sent.
 type IngestingEvents struct {
 	Records []Record
 }
@@ -56,7 +56,7 @@ func (s *hookSet) ingestAllowed(batch []Record) (allowed bool) {
 
 	event := IngestingEvents{Records: make([]Record, len(batch))}
 	for i, record := range batch {
-		event.Records[i] = maps.Clone(record)
+		event.Records[i] = cloneRecord(record)
 	}
 
 	for _, listener := range s.ingesting {
@@ -66,4 +66,19 @@ func (s *hookSet) ingestAllowed(batch []Record) (allowed bool) {
 	}
 
 	return true
+}
+
+// cloneRecord copies a record and the lists in it. Records hold plain values,
+// []string (route_methods) and JSON text for everything nested.
+func cloneRecord(record Record) Record {
+	out := make(Record, len(record))
+	for key, value := range record {
+		if list, ok := value.([]string); ok {
+			value = slices.Clone(list)
+		}
+
+		out[key] = value
+	}
+
+	return out
 }
