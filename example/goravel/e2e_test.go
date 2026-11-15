@@ -226,6 +226,7 @@ func exercise(t *testing.T, mails *fakeSMTP) {
 		{"GET", "/api/handled"},
 		{"POST", "/api/mail"},
 		{"GET", "/api/outgoing"},
+		{"GET", "/api/outgoing-goravel"},
 		{"POST", "/api/notify"},
 		{"POST", "/api/welcome"},
 		{"GET", "/build/assets/app.js"}, // ignored by NIGHTWATCH_IGNORE_PATHS
@@ -327,6 +328,48 @@ func checkValues(t *testing.T, records []map[string]any) {
 	if !routes["/api/tasks/{id}"] && !routes["/api/tasks/:id"] {
 		t.Errorf("route_path of the task route missing: %v", routes)
 	}
+
+	checkRouteAndQueryLocation(t, records)
+	checkGoravelHTTPClient(t, records)
+}
+
+// checkRouteAndQueryLocation: the route name and handler come from Goravel's
+// route info, the query file and line from the code that ran the query.
+func checkRouteAndQueryLocation(t *testing.T, records []map[string]any) {
+	t.Helper()
+	named := false
+	for _, r := range ofType(records, "request") {
+		if r["route_name"] == "tasks.show" && strings.HasSuffix(r["route_action"].(string), "(*TaskController).Show") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("no request with route_name tasks.show and the Show handler as route_action")
+	}
+
+	located := false
+	for _, r := range ofType(records, "query") {
+		file, _ := r["file"].(string)
+		line, _ := r["line"].(float64)
+		if strings.HasSuffix(file, "app/http/controllers/tasks.go") && line > 0 {
+			located = true
+		}
+	}
+	if !located {
+		t.Errorf("no query record points at app/http/controllers/tasks.go: %v", ofType(records, "query"))
+	}
+}
+
+// checkGoravelHTTPClient: Goravel's own HTTP client (otelhttp) makes an
+// outgoing-request record in the request that used it.
+func checkGoravelHTTPClient(t *testing.T, records []map[string]any) {
+	t.Helper()
+	for _, r := range ofType(records, "outgoing-request") {
+		if url, _ := r["url"].(string); strings.Contains(url, "via=goravel") && r["execution_id"] != "" {
+			return
+		}
+	}
+	t.Errorf("no outgoing-request record from Goravel's HTTP client: %v", ofType(records, "outgoing-request"))
 }
 
 // cleanRedis removes only the keys of this run's queue.

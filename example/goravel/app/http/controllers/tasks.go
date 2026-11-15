@@ -96,6 +96,22 @@ func (c *TaskController) Outgoing(ctx http.Context) http.Response {
 	return ctx.Response().Json(http.StatusOK, http.Json{"status": resp.StatusCode})
 }
 
+// OutgoingGoravel calls another HTTP service with Goravel's own HTTP client
+// (config/http.go has enable_telemetry on).
+func (c *TaskController) OutgoingGoravel(ctx http.Context) http.Response {
+	resp, err := facades.Http().WithContext(ctx.Context()).Get(os.Getenv("OUTGOING_URL") + "?via=goravel")
+	if err != nil {
+		return ctx.Response().Json(http.StatusBadGateway, http.Json{"error": err.Error()})
+	}
+
+	// otelhttp ends the client span when the body is read or closed: read it.
+	if _, err := resp.Body(); err != nil {
+		return ctx.Response().Json(http.StatusBadGateway, http.Json{"error": err.Error()})
+	}
+
+	return ctx.Response().Json(http.StatusOK, http.Json{"status": resp.Status()})
+}
+
 // Login signs user 7 in and returns a token.
 func (c *TaskController) Login(ctx http.Context) http.Response {
 	token, err := facades.Auth(ctx).LoginUsingID(7)
