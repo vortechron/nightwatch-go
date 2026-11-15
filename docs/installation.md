@@ -2,7 +2,7 @@
 
 ## Requirements
 
-nightwatch-go needs Go 1.26 or later. The module builds with toolchain go1.27.3, and `GOTOOLCHAIN=auto` downloads it when your Go is older. The Goravel adapter targets Goravel v1.18.
+nightwatch-go needs Go 1.26 or later. The module builds with toolchain go1.27.4, and `GOTOOLCHAIN=auto` downloads it when your Go is older. The Goravel adapter targets Goravel v1.18.
 
 The root package `nightwatch` does not import Goravel. The subpackage `github.com/vortechron/nightwatch-go/goravel` does.
 

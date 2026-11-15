@@ -14,7 +14,7 @@ go run ./cmd/omni-capture -addr 127.0.0.1:2601 -dir ./capture
 go run ./cmd/nwdiff -golden <laravel dir> -go <go dir>
 ```
 
-Go 1.26, toolchain go1.27.3 (`GOTOOLCHAIN=auto`). Pin OpenTelemetry to the versions Goravel uses (otel 1.44, log 0.20).
+Go 1.26, toolchain go1.27.4 (`GOTOOLCHAIN=auto`). Pin OpenTelemetry to the versions Goravel uses (otel 1.44, log 0.20).
 
 ## Layout
 
