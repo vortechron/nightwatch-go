@@ -41,6 +41,8 @@ type TranslatorStats struct {
 // All state is bounded: MaxTraces traces, MaxSpansPerTrace spans per trace and
 // MaxOwners finished-span entries. Records are built and sent outside the lock.
 type Translator struct {
+	*Hooks
+
 	cfg  Config
 	sink Sink
 	now  func() time.Time
@@ -87,6 +89,7 @@ type pendingExec struct {
 // NewTranslator creates a translator that writes finished records to sink.
 func NewTranslator(cfg Config, sink Sink) *Translator {
 	return &Translator{
+		Hooks:   newHooks(),
 		cfg:     cfg.withDefaults(),
 		sink:    sink,
 		now:     time.Now,

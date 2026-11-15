@@ -2,6 +2,7 @@ package nightwatch
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,5 +58,31 @@ func TestClient_FullPath(t *testing.T) {
 	}
 	if err := client.Shutdown(ctx); err != nil {
 		t.Fatal("second shutdown must be harmless")
+	}
+}
+
+func TestClient_HooksRegisteredOnTheClientFilterWhatReachesOmni(t *testing.T) {
+	f := newFakeOmni(t)
+	cfg := senderConfig(f)
+	client := New(cfg)
+	client.RejectQueries(func(q Query) bool { return q.SQL == "select 1" })
+	client.Start()
+
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(client.SpanExporter()))
+	h := &harness{tp: tp, tracer: tp.Tracer("t"), sink: &captureSink{}}
+	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
+		h.query(ctx, "select 1")
+		h.query(ctx, "select 2")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := client.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	body := string(gunzip(t, f.waitFor(t, 1)[0].body))
+	if strings.Contains(body, "select 1") || !strings.Contains(body, "select 2") {
+		t.Fatalf("batch = %s", body)
 	}
 }

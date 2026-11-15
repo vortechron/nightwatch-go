@@ -23,16 +23,33 @@ type exceptionInfo struct {
 	spanName string
 }
 
-func (t *Translator) exceptionRecord(info exceptionInfo, x execInfo) Record {
+// exceptionRecord builds an exception record after the RedactExceptions
+// callbacks ran, or reports false when one of them panicked.
+func (t *Translator) exceptionRecord(info exceptionInfo, x execInfo) (Record, bool) {
 	file, line := FrameLocation(info.frames)
-	groupFile := file
+	stackless := file == ""
 
 	// Without a stack there is no real location. Use the span as the best one
 	// we have, and the message in the group so distinct errors do not all
 	// collapse into one issue.
-	if file == "" {
+	if stackless {
 		file = info.spanName
-		groupFile = info.spanName + "|" + info.message
+	}
+
+	hooks := t.load()
+
+	redacted, keep := filtered(hooks, nil, hooks.redactExceptions, Exception{
+		Class: info.class, Message: info.message, Code: info.code, File: file, Line: line, Handled: info.handled,
+	})
+	if !keep {
+		return nil, false
+	}
+
+	message := redacted.Message
+	groupFile := file
+
+	if stackless {
+		groupFile = info.spanName + "|" + message
 	}
 
 	record := t.childHead(RecordException, info.at, ExceptionGroup(info.class, info.code, groupFile, line), x)
@@ -41,14 +58,14 @@ func (t *Translator) exceptionRecord(info exceptionInfo, x execInfo) Record {
 	record["class"] = Text(info.class)
 	record["file"] = Text(file)
 	record["line"] = line
-	record["message"] = Text(SanitizeUTF8(info.message))
+	record["message"] = Text(SanitizeUTF8(message))
 	record["code"] = Text(info.code)
 	record["trace"] = EncodeFrames(t.withSource(info.frames))
 	record["handled"] = info.handled
 	record["php_version"] = ""
 	record["laravel_version"] = ""
 
-	return record
+	return record, true
 }
 
 // collectExceptions reads the "exception" events of the spans. Every reported

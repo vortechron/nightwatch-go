@@ -13,6 +13,10 @@ import (
 // Client ties the pieces together: the translator that builds records from
 // OpenTelemetry data and the sender that ships them to Omni.
 type Client struct {
+	// Hooks are the filter and redaction callbacks (RejectQueries,
+	// RedactRequests ...). They are shared with the translator.
+	*Hooks
+
 	cfg        Config
 	sender     *Sender
 	translator *Translator
@@ -39,10 +43,13 @@ func New(cfg Config) *Client {
 	cfg = cfg.withDefaults()
 	sender := NewSender(cfg)
 
+	translator := NewTranslator(cfg, sender)
+
 	return &Client{
+		Hooks:      translator.Hooks,
 		cfg:        cfg,
 		sender:     sender,
-		translator: NewTranslator(cfg, sender),
+		translator: translator,
 		stop:       make(chan struct{}),
 	}
 }

@@ -36,13 +36,13 @@ func (t *Translator) spanRecord(span sdktrace.ReadOnlySpan, x execInfo) (Record,
 
 	switch attrs.str(AttrRecord) {
 	case RecordQueuedJob:
-		return t.queuedJobRecord(span, attrs, x), true
+		return t.queuedJobRecord(span, attrs, x)
 	case RecordCacheEvent:
 		return t.cacheEventRecord(span, attrs, x)
 	case RecordMail:
-		return t.mailRecord(span, attrs, x), true
+		return t.mailRecord(span, attrs, x)
 	case RecordNotification:
-		return t.notificationRecord(span, attrs, x), true
+		return t.notificationRecord(span, attrs, x)
 	}
 
 	if span.SpanKind() != trace.SpanKindClient {
@@ -51,9 +51,9 @@ func (t *Translator) spanRecord(span sdktrace.ReadOnlySpan, x execInfo) (Record,
 
 	switch {
 	case attrs.has(attrDBQuery):
-		return t.queryRecord(span, attrs, x), true
+		return t.queryRecord(span, attrs, x)
 	case attrs.has(attrHTTPMethod):
-		return t.outgoingRecord(span, attrs, x), true
+		return t.outgoingRecord(span, attrs, x)
 	default:
 		return nil, false
 	}
@@ -87,47 +87,94 @@ func connectionType(attrs attrSet) string {
 	}
 }
 
-func (t *Translator) queryRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x execInfo) Record {
-	sql := attrs.str(attrDBQuery)
-	connection := attrs.str(attrDBPoolName, "db.namespace")
-	record := t.childHead(RecordQuery, span.StartTime(), QueryGroup(laravelDriver(attrs.str(attrDBSystem)), connection, sql), x)
+// queryRecord builds a query record, or reports false when a RejectQueries
+// callback refused it. Like Laravel, the group is hashed from the SQL after
+// the redaction callbacks ran.
+func (t *Translator) queryRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x execInfo) (Record, bool) {
+	query := Query{
+		SQL:            attrs.str(attrDBQuery),
+		File:           attrs.str(AttrQueryFile),
+		Line:           int(attrs.int(AttrQueryLine)),
+		Duration:       spanDuration(span),
+		Connection:     attrs.str(attrDBPoolName, "db.namespace"),
+		ConnectionType: connectionType(attrs),
+	}
 
-	record["sql"] = MediumText(SanitizeUTF8(sql))
-	record["file"] = TinyText(attrs.str(AttrQueryFile))
-	record["line"] = attrs.int(AttrQueryLine)
-	record["duration"] = micros(spanDuration(span))
-	record["connection"] = TinyText(connection)
-	record["connection_type"] = connectionType(attrs)
+	hooks := t.load()
 
-	return record
+	redacted, keep := filtered(hooks, hooks.rejectQueries, hooks.redactQueries, query)
+	if !keep {
+		return nil, false
+	}
+
+	query.SQL = redacted.SQL
+
+	record := t.childHead(RecordQuery, span.StartTime(), QueryGroup(laravelDriver(attrs.str(attrDBSystem)), query.Connection, query.SQL), x)
+
+	record["sql"] = MediumText(SanitizeUTF8(query.SQL))
+	record["file"] = TinyText(query.File)
+	record["line"] = query.Line
+	record["duration"] = micros(query.Duration)
+	record["connection"] = TinyText(query.Connection)
+	record["connection_type"] = query.ConnectionType
+
+	return record, true
 }
 
-func (t *Translator) outgoingRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x execInfo) Record {
+func (t *Translator) outgoingRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x execInfo) (Record, bool) {
+	request := OutgoingRequest{
+		Method:       attrs.str(attrHTTPMethod),
+		URL:          RedactURL(attrs.str(attrURLFull), t.cfg.RedactQuery),
+		Duration:     spanDuration(span),
+		RequestSize:  attrs.int(attrHTTPReqSize),
+		ResponseSize: attrs.int(attrHTTPRespSize),
+		StatusCode:   int(attrs.int(attrHTTPStatus)),
+	}
+
+	hooks := t.load()
+
+	redacted, keep := filtered(hooks, hooks.rejectOutgoingRequests, hooks.redactOutgoingRequests, request)
+	if !keep {
+		return nil, false
+	}
+
 	host := attrs.str(attrServerAddress)
 	record := t.childHead(RecordOutgoingRequest, span.StartTime(), NameGroup(host), x)
 
 	record["host"] = TinyText(host)
-	record["method"] = attrs.str(attrHTTPMethod)
-	record["url"] = TinyText(RedactURL(attrs.str(attrURLFull), t.cfg.RedactQuery))
-	record["duration"] = micros(spanDuration(span))
-	record["request_size"] = attrs.int(attrHTTPReqSize)
-	record["response_size"] = attrs.int(attrHTTPRespSize)
-	record["status_code"] = attrs.int(attrHTTPStatus)
+	record["method"] = request.Method
+	record["url"] = TinyText(RedactURL(redacted.URL, t.cfg.RedactQuery))
+	record["duration"] = micros(request.Duration)
+	record["request_size"] = request.RequestSize
+	record["response_size"] = request.ResponseSize
+	record["status_code"] = int64(request.StatusCode)
 
-	return record
+	return record, true
 }
 
-func (t *Translator) queuedJobRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x execInfo) Record {
-	name := attrs.str(AttrJobName)
-	record := t.childHead(RecordQueuedJob, span.StartTime(), NameGroup(name), x)
+func (t *Translator) queuedJobRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x execInfo) (Record, bool) {
+	job := QueuedJob{
+		JobID:      attrs.str(AttrJobID),
+		Name:       attrs.str(AttrJobName),
+		Connection: attrs.str(AttrJobConnection),
+		Queue:      attrs.str(AttrJobQueue),
+		Duration:   spanDuration(span),
+	}
 
-	record["job_id"] = attrs.str(AttrJobID)
-	record["name"] = name
-	record["connection"] = attrs.str(AttrJobConnection)
-	record["queue"] = attrs.str(AttrJobQueue)
-	record["duration"] = micros(spanDuration(span))
+	hooks := t.load()
+	if _, keep := filtered(hooks, hooks.rejectQueuedJobs, nil, job); !keep {
+		return nil, false
+	}
 
-	return record
+	record := t.childHead(RecordQueuedJob, span.StartTime(), NameGroup(job.Name), x)
+
+	record["job_id"] = job.JobID
+	record["name"] = job.Name
+	record["connection"] = job.Connection
+	record["queue"] = job.Queue
+	record["duration"] = micros(job.Duration)
+
+	return record, true
 }
 
 var cacheTypes = []string{"hit", "miss", "write", "write-failure", "delete", "delete-failure"}
@@ -138,43 +185,89 @@ func (t *Translator) cacheEventRecord(span sdktrace.ReadOnlySpan, attrs attrSet,
 		return nil, false
 	}
 
-	store, key := attrs.str(AttrCacheStore), attrs.str(AttrCacheKey)
-	record := t.childHead(RecordCacheEvent, span.StartTime(), CacheGroup(store, key), x)
+	event := CacheEvent{
+		Store:    attrs.str(AttrCacheStore),
+		Key:      attrs.str(AttrCacheKey),
+		Type:     kind,
+		Duration: spanDuration(span),
+		TTL:      time.Duration(max(attrs.int(AttrCacheTTL), 0)) * time.Second,
+	}
 
-	record["store"] = store
-	record["key"] = TinyText(key)
-	record["type"] = kind
-	record["duration"] = micros(spanDuration(span))
-	record["ttl"] = max(attrs.int(AttrCacheTTL), 0)
+	hooks := t.load()
+	if hooks.cacheKeyRejected(event.Key) {
+		return nil, false
+	}
+
+	redacted, keep := filtered(hooks, hooks.rejectCacheEvents, hooks.redactCacheEvents, event)
+	if !keep {
+		return nil, false
+	}
+
+	event.Key = redacted.Key
+	record := t.childHead(RecordCacheEvent, span.StartTime(), CacheGroup(event.Store, event.Key), x)
+
+	record["store"] = event.Store
+	record["key"] = TinyText(event.Key)
+	record["type"] = event.Type
+	record["duration"] = micros(event.Duration)
+	record["ttl"] = int64(event.TTL / time.Second)
 
 	return record, true
 }
 
-func (t *Translator) mailRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x execInfo) Record {
-	class := attrs.str(AttrMailClass)
-	record := t.childHead(RecordMail, span.StartTime(), NameGroup(class), x)
+func (t *Translator) mailRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x execInfo) (Record, bool) {
+	mail := Mail{
+		Mailer:      attrs.str(AttrMailMailer),
+		Class:       attrs.str(AttrMailClass),
+		Subject:     attrs.str(AttrMailSubject),
+		To:          int(attrs.int(AttrMailTo)),
+		Cc:          int(attrs.int(AttrMailCc)),
+		Bcc:         int(attrs.int(AttrMailBcc)),
+		Attachments: int(attrs.int(AttrMailAttachments)),
+		Duration:    spanDuration(span),
+		Failed:      spanFailed(span),
+	}
 
-	record["mailer"] = attrs.str(AttrMailMailer)
-	record["class"] = class
-	record["subject"] = TinyText(attrs.str(AttrMailSubject))
-	record["to"] = attrs.int(AttrMailTo)
-	record["cc"] = attrs.int(AttrMailCc)
-	record["bcc"] = attrs.int(AttrMailBcc)
-	record["attachments"] = attrs.int(AttrMailAttachments)
-	record["duration"] = micros(spanDuration(span))
-	record["failed"] = spanFailed(span)
+	hooks := t.load()
 
-	return record
+	redacted, keep := filtered(hooks, hooks.rejectMail, hooks.redactMail, mail)
+	if !keep {
+		return nil, false
+	}
+
+	record := t.childHead(RecordMail, span.StartTime(), NameGroup(mail.Class), x)
+
+	record["mailer"] = mail.Mailer
+	record["class"] = mail.Class
+	record["subject"] = TinyText(redacted.Subject)
+	record["to"] = int64(mail.To)
+	record["cc"] = int64(mail.Cc)
+	record["bcc"] = int64(mail.Bcc)
+	record["attachments"] = int64(mail.Attachments)
+	record["duration"] = micros(mail.Duration)
+	record["failed"] = mail.Failed
+
+	return record, true
 }
 
-func (t *Translator) notificationRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x execInfo) Record {
-	class := attrs.str(AttrNotificationClass)
-	record := t.childHead(RecordNotification, span.StartTime(), NameGroup(class), x)
+func (t *Translator) notificationRecord(span sdktrace.ReadOnlySpan, attrs attrSet, x execInfo) (Record, bool) {
+	note := Notification{
+		Channel:  attrs.str(AttrNotificationChan),
+		Class:    attrs.str(AttrNotificationClass),
+		Duration: spanDuration(span),
+	}
 
-	record["channel"] = attrs.str(AttrNotificationChan)
-	record["class"] = class
-	record["duration"] = micros(spanDuration(span))
+	hooks := t.load()
+	if _, keep := filtered(hooks, hooks.rejectNotifications, nil, note); !keep {
+		return nil, false
+	}
+
+	record := t.childHead(RecordNotification, span.StartTime(), NameGroup(note.Class), x)
+
+	record["channel"] = note.Channel
+	record["class"] = note.Class
+	record["duration"] = micros(note.Duration)
 	record["failed"] = spanFailed(span)
 
-	return record
+	return record, true
 }

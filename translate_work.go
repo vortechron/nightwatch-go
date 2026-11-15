@@ -93,7 +93,9 @@ func (t *Translator) renderOrphans(item work) []Record {
 	}
 
 	for _, found := range collectExceptions(spans) {
-		records = append(records, sanitize(t.exceptionRecord(found, x)))
+		if record, ok := t.exceptionRecord(found, x); ok {
+			records = append(records, sanitize(record))
+		}
 	}
 
 	return append(records, t.logRecords(item.logs, x)...)
@@ -110,8 +112,13 @@ func (t *Translator) assemble(root sdktrace.ReadOnlySpan, x execInfo, members []
 		}
 	}
 
+	execution, ok := t.buildExecution(root, x, tally, preview)
+	if !ok {
+		return nil
+	}
+
 	records := make([]Record, 0, len(children)+2)
-	records = append(records, sanitize(t.buildExecution(root, x, tally, preview)))
+	records = append(records, sanitize(execution))
 	records = append(records, children...)
 
 	return append(records, t.userRecords(x, members)...)
@@ -136,8 +143,10 @@ func (t *Translator) children(root sdktrace.ReadOnlySpan, x execInfo, members []
 	}
 
 	for _, found := range executionExceptions(root, members) {
-		tally.exceptions++
-		records = append(records, sanitize(t.exceptionRecord(found, x)))
+		if record, ok := t.exceptionRecord(found, x); ok {
+			tally.exceptions++
+			records = append(records, sanitize(record))
+		}
 	}
 
 	logRecords := t.logRecords(logs, x)
