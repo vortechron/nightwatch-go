@@ -1,5 +1,7 @@
 # nightwatch-go
 
+Docs: https://go.vortechron.com/nightwatch
+
 An OpenTelemetry based Nightwatch client for Go and Goravel. A Go app that uses it reports into
 [Omni](https://omni.vortechron.com) (a Nightwatch compatible receiver) with the same record shapes as
 `laravel/nightwatch` v1.30.3, so Omni's dashboards work unchanged.
