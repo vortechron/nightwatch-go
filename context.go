@@ -10,9 +10,12 @@ import (
 )
 
 const (
-	// AttrContextPrefix starts the attributes AddContext sets on an execution
-	// root: "nightwatch.context.<key>" holds the JSON of the value.
-	AttrContextPrefix = "nightwatch.context."
+	// AttrContext is the one attribute AddContext sets on an execution root:
+	// the members of a JSON object ("key":value pairs joined by commas, without
+	// the braces). A key added twice is in it twice; the last one wins. One
+	// attribute, however many keys, so the context never pushes other
+	// attributes (status code, sample rate) past the span's attribute limit.
+	AttrContext = "nightwatch.context"
 	// AttrContextError says a value could not be encoded.
 	AttrContextError = "nightwatch.context_error"
 
@@ -43,7 +46,55 @@ func AddContext(ctx context.Context, key string, value any) {
 		return
 	}
 
-	exec.root.SetAttributes(attribute.String(AttrContextPrefix+key, string(encoded)))
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+
+	exec.root.SetAttributes(attribute.String(AttrContext, exec.context.add(key, string(encoded))))
+}
+
+// contextData is the context of one execution. An add appends one member to
+// the attribute text, so it costs the size of its value, not of the whole
+// context. When replaced members make up more than half of the text, it is
+// written again from the latest members.
+type contextData struct {
+	members map[string]string // key to its latest "key":value member
+	text    strings.Builder
+	stale   int // bytes of text that later adds replaced
+}
+
+// add records the encoded value of key and returns the attribute text.
+func (c *contextData) add(key, encoded string) string {
+	if c.members == nil {
+		c.members = map[string]string{}
+	}
+
+	member := jsonString(key) + ":" + encoded
+	if old, found := c.members[key]; found {
+		c.stale += len(old) + 1
+	}
+
+	c.members[key] = member
+
+	if c.stale > c.text.Len()/2 {
+		c.text = strings.Builder{}
+		c.stale = 0
+
+		for _, kept := range c.members {
+			c.append(kept)
+		}
+	} else {
+		c.append(member)
+	}
+
+	return c.text.String()
+}
+
+func (c *contextData) append(member string) {
+	if c.text.Len() > 0 {
+		c.text.WriteByte(',')
+	}
+
+	c.text.WriteString(member)
 }
 
 // executionContext builds the "context" column of an execution record.
@@ -52,16 +103,16 @@ func (t *Translator) executionContext(attrs attrSet) string {
 		return contextError
 	}
 
-	values := map[string]any{}
+	var members map[string]json.RawMessage
+	if text := attrs.str(AttrContext); text != "" {
+		_ = json.Unmarshal([]byte("{"+text+"}"), &members) // a later duplicate key wins
+	}
 
-	for key, value := range attrs {
-		name, found := strings.CutPrefix(string(key), AttrContextPrefix)
-		if !found {
-			continue
-		}
+	values := make(map[string]any, len(members))
 
+	for name, raw := range members {
 		var decoded any
-		if json.Unmarshal([]byte(value.AsString()), &decoded) == nil {
+		if json.Unmarshal(raw, &decoded) == nil {
 			values[name] = t.redactContext(name, decoded)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,6 +32,10 @@ type execution struct {
 	// rate is the rate Sample set, nil when none was set. Jobs queued from the
 	// execution read it, so their attempts follow a sampled-out execution.
 	rate atomic.Pointer[float64]
+
+	mu sync.Mutex
+	// context is what AddContext added (held under mu).
+	context contextData
 }
 
 // MarkActive returns a context that says "this runs inside a Nightwatch

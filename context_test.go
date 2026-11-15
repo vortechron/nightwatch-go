@@ -3,7 +3,9 @@ package nightwatch
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -94,4 +96,61 @@ func TestContext_AValueThatCannotBeEncodedGivesLaravelsErrorObject(t *testing.T)
 
 func TestContext_OutsideAnExecutionAddContextDoesNothing(_ *testing.T) {
 	AddContext(context.Background(), "k", "v") // must not panic
+}
+
+func TestContext_ManyKeysDoNotPushOutTheStatusCodeOrTheSampleRate(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.RequestSampleRate = 0 })
+
+	h.request(context.Background(), 500, func(ctx context.Context, _ trace.Span) {
+		ctx = MarkActive(ctx)
+		for i := range 130 {
+			AddContext(ctx, fmt.Sprintf("key_%03d", i), i)
+		}
+		Sample(ctx, 1)
+	})
+
+	requests := h.sink.ofType(RecordRequest)
+	if len(requests) != 1 {
+		t.Fatalf("Sample(ctx, 1) after 130 context keys must still keep the request: %v", h.sink.all())
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(requests[0]["context"].(string)), &parsed); err != nil || len(parsed) != 130 || parsed["key_129"] != float64(129) {
+		t.Fatalf("context has %d keys, err %v", len(parsed), err)
+	}
+
+	if requests[0]["status_code"] != int64(500) {
+		t.Fatalf("status_code = %#v, want 500", requests[0]["status_code"])
+	}
+}
+
+func TestContext_AKeyReplacedOftenOrAddedFromManyGoroutinesKeepsItsLastValue(t *testing.T) {
+	h := newHarness(t, nil)
+
+	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
+		ctx = MarkActive(ctx)
+		AddContext(ctx, "steady", "kept")
+		for i := range 1_000 {
+			AddContext(ctx, "counter", i)
+		}
+
+		var wg sync.WaitGroup
+		for worker := range 8 {
+			wg.Go(func() {
+				for i := range 50 {
+					AddContext(ctx, fmt.Sprintf("w%d_%d", worker, i), i)
+				}
+			})
+		}
+		wg.Wait()
+	})
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(h.sink.ofType(RecordRequest)[0]["context"].(string)), &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(parsed) != 402 || parsed["counter"] != float64(999) || parsed["steady"] != "kept" || parsed["w7_49"] != float64(49) {
+		t.Fatalf("%d keys, counter %v, steady %v", len(parsed), parsed["counter"], parsed["steady"])
+	}
 }
