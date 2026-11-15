@@ -1,6 +1,7 @@
 package nightwatch
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"slices"
@@ -148,26 +149,38 @@ func (t *Translator) redactContext(key string, value any) any {
 
 // fitContext encodes the context. When it is larger than a TEXT column it
 // keeps the smallest values that fit and adds "_nightwatch_truncated", so the
-// column always holds valid JSON (Laravel cuts the text instead).
+// column always holds valid JSON (Laravel cuts the text instead). Each value
+// is encoded once to learn its size, so the work grows with the number of
+// keys, not its square.
 func fitContext(values map[string]any) string {
 	encoded := jsonString(values)
 	if len(encoded) <= maxText {
 		return encoded
 	}
 
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
+	type member struct {
+		key         string
+		value, size int // bytes of the value and of the whole "key":value member
 	}
 
-	slices.SortFunc(keys, func(a, b string) int { return len(jsonString(values[a])) - len(jsonString(values[b])) })
+	members := make([]member, 0, len(values))
+
+	for key, value := range values {
+		if key != contextTruncated {
+			valueSize := len(jsonString(value))
+			members = append(members, member{key: key, value: valueSize, size: len(jsonString(key)) + 1 + valueSize})
+		}
+	}
+
+	slices.SortFunc(members, func(a, b member) int { return cmp.Or(a.value-b.value, strings.Compare(a.key, b.key)) })
 
 	kept := map[string]any{contextTruncated: true}
+	size := len(jsonString(kept))
 
-	for _, key := range keys {
-		kept[key] = values[key]
-		if len(jsonString(kept)) > maxText {
-			delete(kept, key)
+	for _, next := range members {
+		if size+1+next.size <= maxText { // a comma and the member
+			kept[next.key] = values[next.key]
+			size += 1 + next.size
 		}
 	}
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -152,5 +153,33 @@ func TestContext_AKeyReplacedOftenOrAddedFromManyGoroutinesKeepsItsLastValue(t *
 
 	if len(parsed) != 402 || parsed["counter"] != float64(999) || parsed["steady"] != "kept" || parsed["w7_49"] != float64(49) {
 		t.Fatalf("%d keys, counter %v, steady %v", len(parsed), parsed["counter"], parsed["steady"])
+	}
+}
+
+func TestContext_TrimmingTwentyThousandSmallKeysIsFast(t *testing.T) {
+	h := newHarness(t, nil)
+	start := time.Now()
+
+	h.request(context.Background(), 200, func(ctx context.Context, _ trace.Span) {
+		ctx = MarkActive(ctx)
+		for i := range 20_000 {
+			AddContext(ctx, fmt.Sprintf("key_%05d", i), i)
+		}
+	})
+
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("adding and trimming took %s; it must grow with the number of keys, not its square", elapsed)
+	}
+
+	got := h.sink.ofType(RecordRequest)[0]["context"].(string)
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil || len(got) > 65_535 || len(got) < 65_535-32 || parsed["_nightwatch_truncated"] != true {
+		t.Fatalf("context (%d bytes, %d keys) must be cut to just under the limit, err %v", len(got), len(parsed), err)
+	}
+
+	// The smallest values are kept: every one-digit value fits.
+	if parsed["key_00000"] != float64(0) || parsed["key_00009"] != float64(9) {
+		t.Fatalf("the smallest values must be kept: %v %v", parsed["key_00000"], parsed["key_00009"])
 	}
 }
