@@ -56,7 +56,8 @@ func EncodeJobEnvelope(ctx context.Context, connection, queue string, sync bool)
 
 	traceparent := carrier.Get("traceparent")
 	if sampledOut(ctx) && len(traceparent) > 2 {
-		// The trace flags tell the worker not to sample the attempts.
+		// The trace flags tell the worker the attempts have a sample rate of 0
+		// (StartJobAttempt): kept only when they fail.
 		traceparent = traceparent[:len(traceparent)-2] + "00"
 	}
 

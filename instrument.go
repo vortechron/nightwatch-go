@@ -178,9 +178,21 @@ type jobIDKey struct{}
 // StartJobAttempt starts the root span of one run of a job. The envelope may
 // be empty (a job queued outside any trace): the attempt then starts its own
 // trace.
+//
+// A job queued from a paused or sampled-out execution arrives with an
+// unsampled traceparent. Like Laravel, its attempt then has a sample rate of
+// 0: it is dropped, unless it fails, when the exception rate samples it again.
+// The attempt is still recorded (read as sampled), so a parent-based sampler
+// does not throw the failure away first.
 func StartJobAttempt(ctx context.Context, env JobEnvelope, job JobInfo, attempt int) (context.Context, EndFunc) {
+	sampledOut := false
 	if env.TraceParent != "" {
 		ctx = propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{"traceparent": env.TraceParent})
+
+		if parent := trace.SpanContextFromContext(ctx); parent.IsValid() && !parent.IsSampled() {
+			sampledOut = true
+			ctx = trace.ContextWithRemoteSpanContext(ctx, parent.WithTraceFlags(parent.TraceFlags().WithSampled(true)))
+		}
 	}
 
 	jobID := env.JobID
@@ -200,7 +212,12 @@ func StartJobAttempt(ctx context.Context, env JobEnvelope, job JobInfo, attempt 
 			attribute.Int(AttrJobAttempt, attempt),
 		))
 
-	return MarkActive(ctx), func(err error) { finish(span, err) }
+	ctx = MarkActive(ctx)
+	if sampledOut {
+		DontSample(ctx)
+	}
+
+	return ctx, func(err error) { finish(span, err) }
 }
 
 // CommandInfo describes a console command run.

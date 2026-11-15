@@ -140,6 +140,8 @@ func (t *Translator) configuredRate(root sdktrace.ReadOnlySpan, kind string) flo
 	case RecordJobAttempt:
 		// A job queued from a paused or sampled-out execution arrives with an
 		// unsampled traceparent: like Laravel, its attempts are not sampled.
+		// StartJobAttempt sets the rate itself; this covers a worker that
+		// starts its own span with a sampler that records it anyway.
 		if parent := root.Parent(); parent.IsValid() && !parent.IsSampled() {
 			return 0
 		} else if parent.IsValid() {
