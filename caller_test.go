@@ -56,3 +56,35 @@ func TestQueryCallerProcessor_LeavesOtherScopesAndKindsAlone(t *testing.T) {
 		}
 	}
 }
+
+func TestQueryCallerProcessor_APausedQueryIsNotLocated(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(nightwatch.QueryCallerProcessor(dbScope)), sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	ctx := nightwatch.Pause(nightwatch.MarkActive(context.Background()))
+	_, span := tp.Tracer(dbScope).Start(ctx, "db", trace.WithSpanKind(trace.SpanKindClient))
+	span.End()
+
+	if _, set := attrsOf(recorder.Ended()[0])[nightwatch.AttrQueryFile]; set {
+		t.Fatal("a paused query is never recorded, so its stack is not read")
+	}
+}
+
+// BenchmarkQueryCallerProcessor shows what the stack read costs a query, and
+// that a paused query does not pay it.
+func BenchmarkQueryCallerProcessor(b *testing.B) {
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(nightwatch.QueryCallerProcessor(dbScope)))
+	b.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer(dbScope)
+	active := nightwatch.MarkActive(context.Background())
+
+	for name, ctx := range map[string]context.Context{"located": active, "paused": nightwatch.Pause(active)} {
+		b.Run(name, func(b *testing.B) {
+			for b.Loop() {
+				_, span := tracer.Start(ctx, "db", trace.WithSpanKind(trace.SpanKindClient))
+				span.End()
+			}
+		})
+	}
+}

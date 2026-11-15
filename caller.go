@@ -24,7 +24,8 @@ var queryInternalPrefixes = append(slices.Clone(internalFramePrefixes),
 // like Laravel's query location. A database span is a client span started by
 // a tracer of one of scopes; the Goravel adapter passes Goravel's database
 // instrumentation. It reads the call stack when the span starts, so it sees
-// the code that called the database.
+// the code that called the database. It skips queries started from a paused
+// context; register it only when query records are sent.
 //
 // The location is the first application frame (not the Go installation, not
 // the module cache or vendor folder). When there is none, it is the first
@@ -37,8 +38,10 @@ func QueryCallerProcessor(scopes ...string) sdktrace.SpanProcessor {
 
 type callerProcessor struct{ scopes []string }
 
-func (p *callerProcessor) OnStart(_ context.Context, span sdktrace.ReadWriteSpan) {
-	if span.SpanKind() != trace.SpanKindClient || !slices.Contains(p.scopes, span.InstrumentationScope().Name) {
+// OnStart reads the location. A query started from a paused context is never
+// recorded, so its stack is not read.
+func (p *callerProcessor) OnStart(parent context.Context, span sdktrace.ReadWriteSpan) {
+	if span.SpanKind() != trace.SpanKindClient || !slices.Contains(p.scopes, span.InstrumentationScope().Name) || Paused(parent) {
 		return
 	}
 

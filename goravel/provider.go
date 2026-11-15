@@ -88,7 +88,12 @@ func (NightwatchServiceProvider) Boot(app foundation.Application) {
 	}
 
 	client.Start()
-	RecordQueryLocations(otel.GetTracerProvider())
+
+	if !client.Config().IgnoreQueries {
+		// Query records are not sent: do not pay for reading the stack.
+		RecordQueryLocations(otel.GetTracerProvider())
+	}
+
 	Wrap(app, client)
 }
 
