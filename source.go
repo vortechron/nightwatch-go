@@ -62,6 +62,10 @@ func (t *Translator) withSource(frames []Frame) []Frame {
 		}
 
 		file, line := splitLocation(out[i].File)
+		if ownerOf(t.module, frameFunction(out[i].Source), file) != ownedByApp {
+			continue
+		}
+
 		if lines := readSource(file, line); lines != nil {
 			out[i].Code = lines
 			captured++
@@ -97,10 +101,10 @@ func isApplicationFile(file string) bool {
 	return true
 }
 
-// readSource returns the lines around line (five each side), or nil when the
-// file is not an application file or cannot be read.
+// readSource returns the lines around line (five each side) of an
+// application file, or nil when it cannot be read.
 func readSource(file string, line int) codeLines {
-	if line <= 0 || !isApplicationFile(file) {
+	if line <= 0 {
 		return nil
 	}
 

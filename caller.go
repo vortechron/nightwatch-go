@@ -27,16 +27,22 @@ var queryInternalPrefixes = append(slices.Clone(internalFramePrefixes),
 // the code that called the database. It skips queries started from a paused
 // context; register it only when query records are sent.
 //
-// The location is the first application frame (not the Go installation, not
-// the module cache or vendor folder). When there is none, it is the first
-// frame of a dependency that is not a database layer, as Laravel falls back to
-// the first vendor file outside the framework. Paths are absolute, like the
-// exception frames.
+// The location is the first application frame: a function of the program's
+// main module (from its build information), so the folder it was built in
+// and -trimpath do not matter. When there is none, it is the first frame of a
+// dependency that is not a database layer, as Laravel falls back to the first
+// vendor file outside the framework. Without build information, the file path
+// decides (the Go installation, the module cache and vendor folders are not
+// the application). Paths are as the build recorded them, like the exception
+// frames: absolute, or module relative with -trimpath.
 func QueryCallerProcessor(scopes ...string) sdktrace.SpanProcessor {
-	return &callerProcessor{scopes: slices.Clone(scopes)}
+	return &callerProcessor{scopes: slices.Clone(scopes), module: mainModule()}
 }
 
-type callerProcessor struct{ scopes []string }
+type callerProcessor struct {
+	scopes []string
+	module string
+}
 
 // OnStart reads the location. A query started from a paused context is never
 // recorded, so its stack is not read.
@@ -45,7 +51,7 @@ func (p *callerProcessor) OnStart(parent context.Context, span sdktrace.ReadWrit
 		return
 	}
 
-	if file, line := queryCaller(); file != "" {
+	if file, line := queryCaller(p.module); file != "" {
 		span.SetAttributes(attribute.String(AttrQueryFile, file), attribute.Int(AttrQueryLine, line))
 	}
 }
@@ -57,7 +63,7 @@ func (p *callerProcessor) Shutdown(context.Context) error { return nil }
 func (p *callerProcessor) ForceFlush(context.Context) error { return nil }
 
 // queryCaller finds the location of the code that runs the current query.
-func queryCaller() (string, int) {
+func queryCaller(module string) (string, int) {
 	pcs := make([]uintptr, maxCallerFrames)
 	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs)])
 
@@ -68,9 +74,9 @@ func queryCaller() (string, int) {
 
 		switch {
 		case hasAnyPrefix(frame.Function, queryInternalPrefixes):
-		case isApplicationFile(frame.File):
+		case ownerOf(module, frame.Function, frame.File) == ownedByApp:
 			return frame.File, frame.Line
-		case fallback.File == "" && isDependencyFile(frame.File):
+		case fallback.File == "" && ownerOf(module, frame.Function, frame.File) == ownedByDependency:
 			fallback = frame
 		}
 

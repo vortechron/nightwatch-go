@@ -48,6 +48,8 @@ type Translator struct {
 	now  func() time.Time
 	rand func() float64
 	mem  memSampler
+	// module is the main module: its frames are the application (frameowner.go).
+	module string
 
 	mu      sync.Mutex
 	traces  map[trace.TraceID]*traceBuf
@@ -107,6 +109,7 @@ func NewTranslator(cfg Config, sink Sink) *Translator {
 		owners:  map[trace.SpanID]ownerRef{},
 		pending: map[trace.SpanID]*pendingExec{},
 		users:   map[string]struct{}{},
+		module:  mainModule(),
 	}
 }
 
