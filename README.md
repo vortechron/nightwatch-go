@@ -221,7 +221,7 @@ a trailing job argument that the wrapped job removes before your `Handle` runs.
 
 ## Changelog
 
-### Unreleased
+### v0.3.0
 
 - Added: Laravel's filter and redaction callbacks (`RejectQueries` ... `RejectQueuedJobs`, `RedactRequests` ...
   `RedactExceptions`), `RejectCacheKeys`, and Laravel's vendor command and cache key lists (opt-in).
