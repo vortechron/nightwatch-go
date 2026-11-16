@@ -38,3 +38,12 @@ Go 1.26, toolchain go1.27.4 (`GOTOOLCHAIN=auto`). Pin OpenTelemetry to the versi
 - Goravel keys service providers by their `%T` name. The provider is `NightwatchServiceProvider` on purpose: never export a type
   called `ServiceProvider` from a package named `goravel`, it would collide with every other such package.
 - Do not push or tag without the owner asking.
+
+## Docs: keep closing the gap with laravel/nightwatch
+
+`docs/` is this package's documentation. It ships inside the Go module and is published at https://go.vortechron.com/nightwatch (Markdown for agents: https://go.vortechron.com/llms.txt). Agents learn the package from it, so keep it right and complete.
+
+- Every change ships its docs in the same branch: the feature's page, `docs/laravel-to-go.md`, `docs/differences.md`, the README feature list and CHANGELOG. Every Go snippet compiles.
+- Each time you touch a feature, open the official docs of laravel/nightwatch for it and compare. Close a small gap now, or list it in `docs/differences.md` with the reason. That file is this package's list of what is still missing or different.
+- Had to read the source to learn how something works? Put the answer in the docs page that should have held it.
+- Format: the same shape as the laravel/docs repo. `docs/documentation.md` is the sidebar, one page per feature, GitHub alerts (`> [!NOTE]`) for notes and warnings.
